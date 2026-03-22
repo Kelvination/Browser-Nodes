@@ -59,3 +59,13 @@ Some nodes have dynamic inputs/outputs based on property values (e.g., Random Va
 ## Field Evaluation
 
 Fields are lazy per-element functions evaluated against domain elements.
+
+## Response Format
+
+At the end of every response, provide a link to create a new PR for the current branch. Use this format:
+
+```
+[Create PR](https://github.com/Kelvination/Browser-Nodes/compare/<branch-name>?expand=1)
+```
+
+Replace `<branch-name>` with the actual branch you're working on.
