@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="description" content="GeoNodes - A mobile-friendly geometry & shader nodes editor inspired by Blender" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>GeoNodes - Geometry & Shader Nodes Editor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top bar -->
+    <header id="topbar">
+      <div class="topbar-left">
+        <button id="btn-menu" class="icon-btn" aria-label="Menu">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="5" x2="17" y2="5"/><line x1="3" y1="10" x2="17" y2="10"/><line x1="3" y1="15" x2="17" y2="15"/>
+          </svg>
+        </button>
+        <h1 class="topbar-title">GeoNodes</h1>
+      </div>
+
+      <!-- Graph type tabs -->
+      <div id="graph-tabs">
+        <button class="tab-btn active" data-tab="geo">
+          <span class="tab-icon">△</span><span class="tab-label"> Geometry</span>
+        </button>
+        <button class="tab-btn" data-tab="shader">
+          <span class="tab-icon">◉</span><span class="tab-label"> Shader</span>
+        </button>
+      </div>
+
+      <div class="topbar-right">
+        <button id="btn-run" class="action-btn run-btn">▶</button>
+        <button id="btn-toggle-view" class="icon-btn" aria-label="Toggle 3D View">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M10 2L18 7V13L10 18L2 13V7L10 2Z"/>
+            <path d="M10 18V12M10 2V8M2 7L10 12M18 7L10 12" opacity="0.5"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Side menu (node picker) -->
+    <aside id="side-menu" class="hidden">
+      <div class="menu-header">
+        <h2>Add Node</h2>
+        <button id="btn-close-menu" class="icon-btn">&times;</button>
+      </div>
+      <input type="text" id="node-search" placeholder="Search nodes..." autocomplete="off" />
+      <div id="node-categories"></div>
+      <div class="side-menu-footer">
+        <button id="btn-clear-graph" class="action-btn clear-btn">Clear Graph</button>
+      </div>
+    </aside>
+    <div id="menu-overlay" class="hidden"></div>
+
+    <!-- Node properties panel -->
+    <aside id="properties-panel" class="hidden">
+      <div class="menu-header">
+        <h2 id="props-title">Properties</h2>
+        <button id="btn-close-props" class="icon-btn">&times;</button>
+      </div>
+      <div id="props-content"></div>
+      <button id="btn-delete-node" class="action-btn delete-btn">Delete Node</button>
+    </aside>
+    <div id="props-overlay" class="hidden"></div>
+
+    <!-- Connection drop context menu -->
+    <div id="drop-menu" class="hidden">
+      <input type="text" id="drop-menu-search" placeholder="Search..." autocomplete="off" />
+      <div id="drop-menu-items"></div>
+    </div>
+    <div id="drop-menu-overlay" class="hidden"></div>
+
+    <!-- Inline number edit overlay (positioned over canvas value fields) -->
+    <div id="inline-edit" class="hidden">
+      <input type="number" id="inline-edit-input" inputmode="decimal" />
+    </div>
+
+    <!-- Main canvas area -->
+    <main id="workspace">
+      <div id="node-editor">
+        <canvas id="graph-canvas"></canvas>
+      </div>
+      <div id="viewport-3d" class="hidden">
+        <canvas id="three-canvas"></canvas>
+        <div id="viewport-controls">
+          <button id="btn-reset-cam" class="icon-btn small" title="Reset Camera">⟲</button>
+          <button id="btn-wireframe" class="icon-btn small" title="Wireframe">◇</button>
+        </div>
+        <div id="viewport-info"></div>
+      </div>
+      <div id="shader-preview" class="hidden">
+        <canvas id="shader-canvas"></canvas>
+        <div id="shader-preview-controls">
+          <button id="btn-shader-shape" class="icon-btn small" title="Toggle Shape">◎</button>
+        </div>
+        <div id="shader-preview-info"></div>
+      </div>
+    </main>
+
+    <!-- Bottom toolbar -->
+    <footer id="bottombar">
+      <button id="btn-add-node" class="icon-btn large" aria-label="Add Node">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
+      <button id="btn-zoom-fit" class="icon-btn" aria-label="Zoom to fit">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="3" y="3" width="14" height="14" rx="2"/>
+          <path d="M7 3V1M13 3V1M7 17V19M13 17V19M3 7H1M3 13H1M17 7H19M17 13H19"/>
+        </svg>
+      </button>
+      <button id="btn-undo" class="icon-btn" aria-label="Undo">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 8L8 4M4 8L8 12M4 8H13C15.2 8 17 9.8 17 12C17 14.2 15.2 16 13 16H10"/>
+        </svg>
+      </button>
+      <span id="status-text">Ready</span>
+    </footer>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
