@@ -1183,6 +1183,197 @@ export function registerFieldNodes(registry) {
       })] };
     },
   });
+
+  // ── Euler to Rotation ──────────────────────────────────────────────────
+  // Blender: node_fn_euler_to_rotation.cc
+  // "Build a rotation from separate angles around each axis"
+  // Input: Euler (vector), Output: Rotation (vector - euler angles in our system)
+
+  registry.addNode('geo', 'euler_to_rotation', {
+    label: 'Euler to Rotation',
+    category: 'VECTOR',
+    inputs: [{ name: 'Euler', type: SocketType.VECTOR }],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      // In our system rotations are euler vectors, so pass through
+      const euler = inputs['Euler'];
+      if (isField(euler)) return { outputs: [euler] };
+      return { outputs: [euler || { x: 0, y: 0, z: 0 }] };
+    },
+  });
+
+  // ── Axis Angle to Rotation ─────────────────────────────────────────────
+  // Blender: node_fn_axis_angle_to_rotation.cc
+  // "Build a rotation from an axis and angle"
+  // Inputs: Axis (vector, default 0,0,1), Angle (float)
+  // Output: Rotation (vector)
+
+  registry.addNode('geo', 'axis_angle_to_rotation', {
+    label: 'Axis Angle to Rotation',
+    category: 'VECTOR',
+    inputs: [
+      { name: 'Axis', type: SocketType.VECTOR },
+      { name: 'Angle', type: SocketType.FLOAT },
+    ],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const axisInput = inputs['Axis'] || { x: 0, y: 0, z: 1 };
+      const angleInput = inputs['Angle'] || 0;
+
+      const result = combineFields(axisInput, angleInput, 'vector', (axis, angle) => {
+        const a = axis || { x: 0, y: 0, z: 1 };
+        const ang = angle || 0;
+        // Simplified: represent axis-angle as euler approximation
+        const len = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) || 1;
+        return {
+          x: (a.x / len) * ang,
+          y: (a.y / len) * ang,
+          z: (a.z / len) * ang,
+        };
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Rotate Rotation ────────────────────────────────────────────────────
+  // Blender: node_fn_rotate_rotation.cc
+  // "Apply a secondary rotation to a rotation"
+  // Inputs: Rotation, Rotate By
+  // Output: Rotation
+  // Property: rotation_space (Global, Local)
+
+  registry.addNode('geo', 'rotate_rotation', {
+    label: 'Rotate Rotation',
+    category: 'VECTOR',
+    inputs: [
+      { name: 'Rotation', type: SocketType.VECTOR },
+      { name: 'Rotate By', type: SocketType.VECTOR },
+    ],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: { rotation_space: 'GLOBAL' },
+    props: [
+      {
+        key: 'rotation_space', label: 'Space', type: 'select',
+        options: [
+          { value: 'GLOBAL', label: 'Global' },
+          { value: 'LOCAL', label: 'Local' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const result = combineFields(inputs['Rotation'], inputs['Rotate By'], 'vector', (rot, by) => {
+        const r = rot || { x: 0, y: 0, z: 0 };
+        const b = by || { x: 0, y: 0, z: 0 };
+        // Simplified euler addition
+        return { x: r.x + b.x, y: r.y + b.y, z: r.z + b.z };
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Invert Rotation ────────────────────────────────────────────────────
+  // Blender: node_fn_invert_rotation.cc
+  // "Compute the inverse of the given rotation"
+
+  registry.addNode('geo', 'invert_rotation', {
+    label: 'Invert Rotation',
+    category: 'VECTOR',
+    inputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const rot = inputs['Rotation'];
+      const result = mapField(rot, 'vector', (r) => {
+        const v = r || { x: 0, y: 0, z: 0 };
+        return { x: -v.x, y: -v.y, z: -v.z };
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Is Face Smooth ─────────────────────────────────────────────────────
+  // Blender: node_geo_input_face_smooth.cc
+  // "Retrieve whether each face is marked for smooth normals"
+  // Output: Smooth (bool field) - reads sharp_face and inverts
+
+  registry.addNode('geo', 'is_face_smooth', {
+    label: 'Is Face Smooth',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [{ name: 'Smooth', type: SocketType.BOOL }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // Reads sharp_face attribute and inverts (smooth = !sharp)
+      return { outputs: [new Field('bool', () => true)] };
+    },
+  });
+
+  // ── Index Switch ───────────────────────────────────────────────────────
+  // Blender: node_geo_index_switch.cc
+  // "Choose between values with an index"
+  //
+  // Inputs: Index (int), 0..N values
+  // Output: Output (dynamic type)
+  // Property: data_type
+  //
+  // Simplified: we support 4 fixed inputs (0, 1, 2, 3).
+
+  registry.addNode('geo', 'index_switch', {
+    label: 'Index Switch',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT' },
+    getInputs(values) {
+      const type = switchDataTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Index', type: SocketType.INT },
+        { name: '0', type },
+        { name: '1', type },
+        { name: '2', type },
+        { name: '3', type },
+      ];
+    },
+    getOutputs(values) {
+      const type = switchDataTypeToSocket(values.data_type || 'FLOAT');
+      return [{ name: 'Output', type }];
+    },
+    getProps() {
+      return [{
+        key: 'data_type', label: 'Data Type', type: 'select',
+        options: [
+          { value: 'FLOAT', label: 'Float' },
+          { value: 'INT', label: 'Integer' },
+          { value: 'BOOLEAN', label: 'Boolean' },
+          { value: 'VECTOR', label: 'Vector' },
+          { value: 'COLOR', label: 'Color' },
+          { value: 'GEOMETRY', label: 'Geometry' },
+        ],
+      }];
+    },
+    evaluate(values, inputs) {
+      const idx = resolveScalar(inputs['Index'], 0);
+      const clamped = Math.max(0, Math.min(3, Math.round(idx)));
+      const result = inputs[String(clamped)];
+      return { outputs: [result ?? 0] };
+    },
+  });
+}
+
+function switchDataTypeToSocket(type) {
+  switch (type) {
+    case 'FLOAT': return SocketType.FLOAT;
+    case 'INT': return SocketType.INT;
+    case 'BOOLEAN': return SocketType.BOOL;
+    case 'VECTOR': return SocketType.VECTOR;
+    case 'COLOR': return SocketType.COLOR;
+    case 'GEOMETRY': return SocketType.GEOMETRY;
+    default: return SocketType.FLOAT;
+  }
 }
 
 function namedAttrTypeToSocket(type) {

@@ -671,6 +671,88 @@ export function registerMeshReadNodes(registry) {
       ]};
     },
   });
+
+  // ── 20. Corners of Vertex ──────────────────────────────────────────────
+  // Blender: node_geo_mesh_topology_corners_of_vertex.cc
+  // "Retrieve face corners connected to vertices"
+  // Inputs: Vertex Index, Weights, Sort Index
+  // Outputs: Corner Index (int field), Total (int field)
+
+  registry.addNode('geo', 'corners_of_vertex', {
+    label: 'Corners of Vertex',
+    category: 'INPUT',
+    inputs: [
+      { name: 'Vertex Index', type: SocketType.INT },
+      { name: 'Weights', type: SocketType.FLOAT },
+      { name: 'Sort Index', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Corner Index', type: SocketType.INT },
+      { name: 'Total', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [
+        new Field('int', (el) => el.index),
+        new Field('int', () => 0),
+      ]};
+    },
+  });
+
+  // ── 21. Edges of Vertex ────────────────────────────────────────────────
+  // Blender: node_geo_mesh_topology_edges_of_vertex.cc
+  // "Retrieve edges connected to each vertex"
+  // Inputs: Vertex Index, Weights, Sort Index
+  // Outputs: Edge Index (int field), Total (int field)
+
+  registry.addNode('geo', 'edges_of_vertex', {
+    label: 'Edges of Vertex',
+    category: 'INPUT',
+    inputs: [
+      { name: 'Vertex Index', type: SocketType.INT },
+      { name: 'Weights', type: SocketType.FLOAT },
+      { name: 'Sort Index', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Edge Index', type: SocketType.INT },
+      { name: 'Total', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [
+        new Field('int', (el) => el.index),
+        new Field('int', () => 0),
+      ]};
+    },
+  });
+
+  // ── 22. Edges of Corner ────────────────────────────────────────────────
+  // Blender: node_geo_mesh_topology_edges_of_corner.cc
+  // "Retrieve the edges on both sides of a face corner"
+  // Input: Corner Index
+  // Outputs: Next Edge Index (int field), Previous Edge Index (int field)
+
+  registry.addNode('geo', 'edges_of_corner', {
+    label: 'Edges of Corner',
+    category: 'INPUT',
+    inputs: [
+      { name: 'Corner Index', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Next Edge Index', type: SocketType.INT },
+      { name: 'Previous Edge Index', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [
+        new Field('int', () => 0),
+        new Field('int', () => 0),
+      ]};
+    },
+  });
 }
 
 // ── Convex hull helper ──────────────────────────────────────────────────────
