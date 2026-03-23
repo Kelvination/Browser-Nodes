@@ -1114,6 +1114,236 @@ export function registerMeshOpNodes(registry) {
       }
     },
   });
+
+  // ── 8. Triangulate ──────────────────────────────────────────────────────
+  // Blender: node_geo_triangulate.cc
+  // "Triangulate mesh faces"
+  //
+  // Inputs: Mesh, Selection (bool field, default true)
+  // Properties: Quad Method, Ngon Method
+  // Output: Mesh
+
+  registry.addNode('geo', 'triangulate', {
+    label: 'Triangulate',
+    category: 'MESH',
+    inputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: { quad_method: 'SHORT_EDGE', ngon_method: 'BEAUTY' },
+    props: [
+      {
+        key: 'quad_method', label: 'Quad Method', type: 'select',
+        options: [
+          { value: 'BEAUTY', label: 'Beauty' },
+          { value: 'FIXED', label: 'Fixed' },
+          { value: 'ALTERNATE', label: 'Fixed Alternate' },
+          { value: 'SHORT_EDGE', label: 'Shortest Diagonal' },
+          { value: 'LONG_EDGE', label: 'Longest Diagonal' },
+        ],
+      },
+      {
+        key: 'ngon_method', label: 'Ngon Method', type: 'select',
+        options: [
+          { value: 'BEAUTY', label: 'Beauty' },
+          { value: 'EAR_CLIP', label: 'Clip' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Mesh'];
+      if (!geo || !geo.mesh || geo.mesh.vertexCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const result = geo.copy();
+      const mesh = result.mesh;
+      const elements = mesh.buildElements(DOMAIN.FACE);
+      const selection = resolveSelection(inputs['Selection'], elements);
+
+      // Check if already triangulated
+      const allTris = mesh.faceVertCounts.every(c => c === 3);
+      if (allTris) return { outputs: [result] };
+
+      const quadMethod = values.quad_method || 'SHORT_EDGE';
+      const newFaceVertCounts = [];
+      const newCornerVerts = [];
+      let cornerIdx = 0;
+
+      for (let fi = 0; fi < mesh.faceCount; fi++) {
+        const count = mesh.faceVertCounts[fi];
+        const corners = mesh.cornerVerts.slice(cornerIdx, cornerIdx + count);
+        cornerIdx += count;
+
+        if (count === 3 || (selection && !selection[fi])) {
+          // Already a triangle or not selected - keep as-is
+          newFaceVertCounts.push(count);
+          newCornerVerts.push(...corners);
+          continue;
+        }
+
+        if (count === 4) {
+          // Quad triangulation based on method
+          let splitIdx;
+          if (quadMethod === 'FIXED' || quadMethod === 'BEAUTY') {
+            splitIdx = 0; // Split 0-2
+          } else if (quadMethod === 'ALTERNATE') {
+            splitIdx = 1; // Split 1-3
+          } else if (quadMethod === 'SHORT_EDGE') {
+            // Split along shortest diagonal
+            const p0 = mesh.positions[corners[0]];
+            const p2 = mesh.positions[corners[2]];
+            const p1 = mesh.positions[corners[1]];
+            const p3 = mesh.positions[corners[3]];
+            const d02 = distSq(p0, p2);
+            const d13 = distSq(p1, p3);
+            splitIdx = d02 <= d13 ? 0 : 1;
+          } else { // LONG_EDGE
+            const p0 = mesh.positions[corners[0]];
+            const p2 = mesh.positions[corners[2]];
+            const p1 = mesh.positions[corners[1]];
+            const p3 = mesh.positions[corners[3]];
+            const d02 = distSq(p0, p2);
+            const d13 = distSq(p1, p3);
+            splitIdx = d02 >= d13 ? 0 : 1;
+          }
+
+          if (splitIdx === 0) {
+            newFaceVertCounts.push(3, 3);
+            newCornerVerts.push(corners[0], corners[1], corners[2]);
+            newCornerVerts.push(corners[0], corners[2], corners[3]);
+          } else {
+            newFaceVertCounts.push(3, 3);
+            newCornerVerts.push(corners[1], corners[2], corners[3]);
+            newCornerVerts.push(corners[1], corners[3], corners[0]);
+          }
+        } else {
+          // N-gon: fan triangulation from first vertex (ear clipping simplified)
+          for (let i = 1; i < count - 1; i++) {
+            newFaceVertCounts.push(3);
+            newCornerVerts.push(corners[0], corners[i], corners[i + 1]);
+          }
+        }
+      }
+
+      mesh.faceVertCounts = newFaceVertCounts;
+      mesh.cornerVerts = newCornerVerts;
+      mesh.invalidateCornerOffsets();
+
+      return { outputs: [result] };
+    },
+  });
+
+  // ── 9. Flip Faces ───────────────────────────────────────────────────────
+  // Blender: node_geo_flip_faces.cc
+  // "Reverse the order of the vertices and edges of selected faces,
+  //  flipping their normal direction"
+  //
+  // Inputs: Mesh, Selection (bool field, default true)
+  // Output: Mesh
+
+  registry.addNode('geo', 'flip_faces', {
+    label: 'Flip Faces',
+    category: 'MESH',
+    inputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Mesh'];
+      if (!geo || !geo.mesh || geo.mesh.faceCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const result = geo.copy();
+      const mesh = result.mesh;
+      const elements = mesh.buildElements(DOMAIN.FACE);
+      const selection = resolveSelection(inputs['Selection'], elements);
+
+      let cornerIdx = 0;
+      for (let fi = 0; fi < mesh.faceCount; fi++) {
+        const count = mesh.faceVertCounts[fi];
+        if (!selection || selection[fi]) {
+          // Reverse the corner vertex order for this face
+          const start = cornerIdx;
+          const end = cornerIdx + count;
+          const slice = mesh.cornerVerts.slice(start, end);
+          slice.reverse();
+          for (let i = 0; i < count; i++) {
+            mesh.cornerVerts[start + i] = slice[i];
+          }
+        }
+        cornerIdx += count;
+      }
+
+      return { outputs: [result] };
+    },
+  });
+
+  // ── 10. Duplicate Elements ──────────────────────────────────────────────
+  // Blender: node_geo_duplicate_elements.cc
+  // "Generate copies of each selected element"
+  //
+  // Inputs: Geometry, Selection (bool field), Amount (int field, default 1)
+  // Outputs: Geometry (only duplicates, not originals), Duplicate Index (int field)
+  // Property: Domain (Point, Face, Edge, Spline, Instance)
+
+  registry.addNode('geo', 'duplicate_elements', {
+    label: 'Duplicate Elements',
+    category: 'GEOMETRY',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'Amount', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+      { name: 'Duplicate Index', type: SocketType.INT },
+    ],
+    defaults: { amount: 1, domain: 'POINT' },
+    props: [
+      { key: 'amount', label: 'Amount', type: 'int', min: 0, max: 10000, step: 1 },
+      {
+        key: 'domain', label: 'Domain', type: 'select',
+        options: [
+          { value: 'POINT', label: 'Point' },
+          { value: 'FACE', label: 'Face' },
+          { value: 'INSTANCE', label: 'Instance' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) {
+        return { outputs: [new GeometrySet(), new Field('int', () => 0)] };
+      }
+
+      const domain = values.domain || 'POINT';
+      const amountInput = inputs['Amount'];
+      const amount = amountInput != null ? resolveScalar(amountInput, values.amount) : values.amount;
+
+      if (amount <= 0) {
+        return { outputs: [new GeometrySet(), new Field('int', () => 0)] };
+      }
+
+      if (domain === 'POINT' && geo.mesh && geo.mesh.vertexCount > 0) {
+        return duplicatePoints(geo, inputs, amount);
+      } else if (domain === 'FACE' && geo.mesh && geo.mesh.faceCount > 0) {
+        return duplicateFaces(geo, inputs, amount);
+      }
+
+      // For unsupported domains, return empty
+      return { outputs: [new GeometrySet(), new Field('int', () => 0)] };
+    },
+  });
 }
 
 // ── Extrude Faces (Individual) ─────────────────────────────────────────────
@@ -1329,4 +1559,89 @@ function extrudeEdges(mesh, inputs, offsetScale, result) {
   const sideField = new Field('bool', (el) => el.index >= sideFaceStart);
 
   return { outputs: [result, topField, sideField] };
+}
+
+// ── Duplicate helpers ────────────────────────────────────────────────────────
+
+function duplicatePoints(geo, inputs, amount) {
+  const mesh = geo.mesh;
+  const elements = mesh.buildElements(DOMAIN.POINT);
+  const selection = resolveSelection(inputs['Selection'], elements);
+
+  const result = new GeometrySet();
+  const newMesh = new MeshComponent();
+  const dupIndices = [];
+
+  for (let vi = 0; vi < mesh.vertexCount; vi++) {
+    if (selection && !selection[vi]) continue;
+    for (let d = 0; d < amount; d++) {
+      newMesh.positions.push({
+        x: mesh.positions[vi].x,
+        y: mesh.positions[vi].y,
+        z: mesh.positions[vi].z,
+      });
+      dupIndices.push(d);
+    }
+  }
+
+  if (newMesh.positions.length > 0) {
+    result.mesh = newMesh;
+  }
+
+  const dupIndexField = new Field('int', (el) => {
+    return dupIndices[el.index] ?? 0;
+  });
+
+  return { outputs: [result, dupIndexField] };
+}
+
+function duplicateFaces(geo, inputs, amount) {
+  const mesh = geo.mesh;
+  const elements = mesh.buildElements(DOMAIN.FACE);
+  const selection = resolveSelection(inputs['Selection'], elements);
+
+  const result = new GeometrySet();
+  const newMesh = new MeshComponent();
+  const dupIndices = [];
+
+  let cornerIdx = 0;
+  for (let fi = 0; fi < mesh.faceCount; fi++) {
+    const count = mesh.faceVertCounts[fi];
+    const corners = mesh.cornerVerts.slice(cornerIdx, cornerIdx + count);
+    cornerIdx += count;
+
+    if (selection && !selection[fi]) continue;
+
+    for (let d = 0; d < amount; d++) {
+      // Copy the face vertices
+      const vertStart = newMesh.positions.length;
+      for (const vi of corners) {
+        newMesh.positions.push({ ...mesh.positions[vi] });
+      }
+      newMesh.faceVertCounts.push(count);
+      for (let ci = 0; ci < count; ci++) {
+        newMesh.cornerVerts.push(vertStart + ci);
+      }
+      // Add edges for this face
+      for (let ci = 0; ci < count; ci++) {
+        newMesh.edges.push([vertStart + ci, vertStart + (ci + 1) % count]);
+      }
+      dupIndices.push(d);
+    }
+  }
+
+  if (newMesh.positions.length > 0) {
+    result.mesh = newMesh;
+  }
+
+  const dupIndexField = new Field('int', (el) => {
+    return dupIndices[el.index] ?? 0;
+  });
+
+  return { outputs: [result, dupIndexField] };
+}
+
+function distSq(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  return dx * dx + dy * dy + dz * dz;
 }

@@ -13,8 +13,8 @@ import {
   GeometrySet,
   DOMAIN,
 } from '../core/geometry.js';
-import { Field, isField, combineFields, resolveScalar } from '../core/field.js';
-import { seededRandom, perlinNoise3D } from '../core/utils.js';
+import { Field, isField, combineFields, resolveField, resolveScalar, resolveSelection } from '../core/field.js';
+import { seededRandom, perlinNoise3D, voronoi3D, lerp } from '../core/utils.js';
 
 export function registerUtilityNodes(registry) {
   // ── Categories ──────────────────────────────────────────────────────────
@@ -287,6 +287,468 @@ export function registerUtilityNodes(registry) {
       ]};
     },
   });
+
+  // ── 4. Mix ──────────────────────────────────────────────────────────────
+  // Blender: node_shader_mix.cc
+  // Interpolates between two values. Dynamic type (Float/Vector/Color).
+  //
+  // Inputs: Factor (float 0.5, 0-1), A (dynamic), B (dynamic)
+  // Output: Result (dynamic)
+  // Properties: data_type, clamp_factor (bool, default true)
+
+  registry.addNode('geo', 'mix', {
+    label: 'Mix',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT', clamp_factor: true },
+    getInputs(values) {
+      const type = values.data_type || 'FLOAT';
+      const socketType = mixTypeToSocket(type);
+      return [
+        { name: 'Factor', type: SocketType.FLOAT },
+        { name: 'A', type: socketType },
+        { name: 'B', type: socketType },
+      ];
+    },
+    getOutputs(values) {
+      const type = values.data_type || 'FLOAT';
+      const socketType = mixTypeToSocket(type);
+      return [
+        { name: 'Result', type: socketType },
+      ];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'VECTOR', label: 'Vector' },
+            { value: 'COLOR', label: 'Color' },
+          ],
+        },
+        { key: 'clamp_factor', label: 'Clamp Factor', type: 'bool' },
+      ];
+    },
+    evaluate(values, inputs) {
+      const factorInput = inputs['Factor'];
+      const aInput = inputs['A'];
+      const bInput = inputs['B'];
+      const clampFactor = values.clamp_factor !== false;
+      const dataType = values.data_type || 'FLOAT';
+
+      const hasField = isField(factorInput) || isField(aInput) || isField(bInput);
+
+      function mixValues(factor, a, b) {
+        let t = factor ?? 0.5;
+        if (clampFactor) t = Math.max(0, Math.min(1, t));
+
+        if (dataType === 'VECTOR') {
+          const va = a || { x: 0, y: 0, z: 0 };
+          const vb = b || { x: 0, y: 0, z: 0 };
+          return {
+            x: va.x + (vb.x - va.x) * t,
+            y: va.y + (vb.y - va.y) * t,
+            z: va.z + (vb.z - va.z) * t,
+          };
+        } else if (dataType === 'COLOR') {
+          const ca = a || { r: 0, g: 0, b: 0, a: 1 };
+          const cb = b || { r: 0, g: 0, b: 0, a: 1 };
+          return {
+            r: ca.r + (cb.r - ca.r) * t,
+            g: ca.g + (cb.g - ca.g) * t,
+            b: ca.b + (cb.b - ca.b) * t,
+            a: ca.a + (cb.a - ca.a) * t,
+          };
+        } else {
+          return (a ?? 0) + ((b ?? 0) - (a ?? 0)) * t;
+        }
+      }
+
+      if (hasField) {
+        const fieldType = dataType === 'VECTOR' ? 'vector' :
+                          dataType === 'COLOR' ? 'color' : 'float';
+        const resultField = new Field(fieldType, (el) => {
+          const f = isField(factorInput) ? factorInput.evaluateAt(el) : (factorInput ?? 0.5);
+          const a = isField(aInput) ? aInput.evaluateAt(el) : aInput;
+          const b = isField(bInput) ? bInput.evaluateAt(el) : bInput;
+          return mixValues(f, a, b);
+        });
+        return { outputs: [resultField] };
+      }
+
+      return { outputs: [mixValues(factorInput, aInput, bInput)] };
+    },
+  });
+
+  // ── 5. Voronoi Texture ──────────────────────────────────────────────────
+  // Blender: node_shader_tex_voronoi.cc
+  // Procedural Voronoi/Worley noise texture.
+  //
+  // Inputs: Vector (vector field), Scale (float 5), Randomness (float 1)
+  // Outputs: Distance (float field), Color (color field), Position (vector field)
+  // Properties: Feature (F1, F2, Smooth F1, etc.)
+
+  registry.addNode('geo', 'voronoi_texture', {
+    label: 'Voronoi Texture',
+    category: 'TEXTURE',
+    inputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+      { name: 'Scale', type: SocketType.FLOAT },
+      { name: 'Randomness', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Distance', type: SocketType.FLOAT },
+      { name: 'Color', type: SocketType.COLOR },
+      { name: 'Position', type: SocketType.VECTOR },
+    ],
+    defaults: { scale: 5.0, randomness: 1.0, feature: 'F1', metric: 'EUCLIDEAN' },
+    props: [
+      { key: 'scale', label: 'Scale', type: 'float', min: -1000, max: 1000, step: 0.1 },
+      { key: 'randomness', label: 'Randomness', type: 'float', min: 0, max: 1, step: 0.01 },
+      {
+        key: 'feature', label: 'Feature', type: 'select',
+        options: [
+          { value: 'F1', label: 'F1' },
+          { value: 'F2', label: 'F2' },
+          { value: 'SMOOTH_F1', label: 'Smooth F1' },
+          { value: 'DISTANCE_TO_EDGE', label: 'Distance to Edge' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const vectorInput = inputs['Vector'];
+      const scaleInput = inputs['Scale'];
+      const randomnessInput = inputs['Randomness'];
+
+      const scale = scaleInput != null ? scaleInput : values.scale;
+      const randomness = randomnessInput != null ? randomnessInput : values.randomness;
+      const feature = values.feature || 'F1';
+
+      const hasField = isField(vectorInput) || isField(scale) || isField(randomness);
+
+      function computeVoronoi(pos, sc, rand) {
+        const s = typeof sc === 'number' ? sc : resolveScalar(sc, 5);
+        const r = typeof rand === 'number' ? rand : resolveScalar(rand, 1);
+        const px = (pos?.x ?? 0) * s;
+        const py = (pos?.y ?? 0) * s;
+        const pz = (pos?.z ?? 0) * s;
+        const result = voronoi3D(px, py, pz, r, feature, 'EUCLIDEAN', 1.0, 2.0);
+        return result;
+      }
+
+      if (hasField) {
+        const distField = new Field('float', (el) => {
+          const pos = isField(vectorInput) ? vectorInput.evaluateAt(el) : (vectorInput || el.position);
+          const sc = isField(scale) ? scale.evaluateAt(el) : scale;
+          const rand = isField(randomness) ? randomness.evaluateAt(el) : randomness;
+          return computeVoronoi(pos, sc, rand).distance;
+        });
+        const colorField = new Field('color', (el) => {
+          const pos = isField(vectorInput) ? vectorInput.evaluateAt(el) : (vectorInput || el.position);
+          const sc = isField(scale) ? scale.evaluateAt(el) : scale;
+          const rand = isField(randomness) ? randomness.evaluateAt(el) : randomness;
+          const v = computeVoronoi(pos, sc, rand);
+          return { r: v.color.x, g: v.color.y, b: v.color.z, a: 1 };
+        });
+        const posField = new Field('vector', (el) => {
+          const pos = isField(vectorInput) ? vectorInput.evaluateAt(el) : (vectorInput || el.position);
+          const sc = isField(scale) ? scale.evaluateAt(el) : scale;
+          const rand = isField(randomness) ? randomness.evaluateAt(el) : randomness;
+          return computeVoronoi(pos, sc, rand).position || { x: 0, y: 0, z: 0 };
+        });
+        return { outputs: [distField, colorField, posField] };
+      }
+
+      const pos = vectorInput || { x: 0, y: 0, z: 0 };
+      const v = computeVoronoi(pos, scale, randomness);
+      return { outputs: [
+        v.distance,
+        { r: v.color.x, g: v.color.y, b: v.color.z, a: 1 },
+        v.position || { x: 0, y: 0, z: 0 },
+      ]};
+    },
+  });
+
+  // ── 6. Capture Attribute ────────────────────────────────────────────────
+  // Blender: node_geo_attribute_capture.cc
+  // Evaluates a field on geometry and stores the result as an attribute.
+  //
+  // Inputs: Geometry, Value (dynamic field)
+  // Outputs: Geometry, Value (stored field)
+  // Properties: data_type, domain
+  //
+  // Simplified: single capture item (Blender supports multiple via Extend sockets)
+
+  registry.addNode('geo', 'capture_attribute', {
+    label: 'Capture Attribute',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT', domain: 'POINT' },
+    getInputs(values) {
+      const socketType = captureTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Geometry', type: SocketType.GEOMETRY },
+        { name: 'Value', type: socketType },
+      ];
+    },
+    getOutputs(values) {
+      const socketType = captureTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Geometry', type: SocketType.GEOMETRY },
+        { name: 'Value', type: socketType },
+      ];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+            { value: 'BOOLEAN', label: 'Boolean' },
+            { value: 'FLOAT_COLOR', label: 'Color' },
+          ],
+        },
+        {
+          key: 'domain', label: 'Domain', type: 'select',
+          options: [
+            { value: 'POINT', label: 'Point' },
+            { value: 'EDGE', label: 'Edge' },
+            { value: 'FACE', label: 'Face' },
+            { value: 'CORNER', label: 'Face Corner' },
+          ],
+        },
+      ];
+    },
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      const valueInput = inputs['Value'];
+
+      if (!geo) {
+        return { outputs: [new GeometrySet(), valueInput ?? 0] };
+      }
+
+      const domain = values.domain || 'POINT';
+      const domainEnum = domain === 'FACE' ? DOMAIN.FACE :
+                         domain === 'EDGE' ? DOMAIN.EDGE :
+                         domain === 'CORNER' ? DOMAIN.CORNER : DOMAIN.POINT;
+
+      const result = geo.copy();
+      const elements = result.buildElements(domainEnum);
+
+      if (elements.length === 0 || valueInput == null) {
+        return { outputs: [result, valueInput ?? 0] };
+      }
+
+      // Evaluate the field and capture the values
+      const capturedValues = isField(valueInput)
+        ? valueInput.evaluateAll(elements)
+        : new Array(elements.length).fill(valueInput);
+
+      // Return a field that reads from the captured array
+      const fieldType = values.data_type === 'FLOAT_VECTOR' ? 'vector' :
+                        values.data_type === 'INT' ? 'int' :
+                        values.data_type === 'BOOLEAN' ? 'bool' :
+                        values.data_type === 'FLOAT_COLOR' ? 'color' : 'float';
+
+      const capturedField = new Field(fieldType, (el) => {
+        const idx = el.index;
+        if (idx >= 0 && idx < capturedValues.length) {
+          return capturedValues[idx];
+        }
+        return capturedValues[0] ?? 0;
+      });
+
+      return { outputs: [result, capturedField] };
+    },
+  });
+
+  // ── 7. Attribute Statistic ──────────────────────────────────────────────
+  // Blender: node_geo_attribute_statistic.cc
+  // Computes min/max/mean/median/sum/range/stddev/variance of a field.
+  //
+  // Inputs: Geometry, Selection (bool field), Attribute (float/vector field)
+  // Outputs: Mean, Median, Sum, Min, Max, Range, Std Dev, Variance
+  // Properties: data_type (Float, Vector), domain
+
+  registry.addNode('geo', 'attribute_statistic', {
+    label: 'Attribute Statistic',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT', domain: 'POINT' },
+    getInputs(values) {
+      const type = values.data_type === 'FLOAT_VECTOR' ? SocketType.VECTOR : SocketType.FLOAT;
+      return [
+        { name: 'Geometry', type: SocketType.GEOMETRY },
+        { name: 'Selection', type: SocketType.BOOL },
+        { name: 'Attribute', type: type },
+      ];
+    },
+    getOutputs(values) {
+      const type = values.data_type === 'FLOAT_VECTOR' ? SocketType.VECTOR : SocketType.FLOAT;
+      return [
+        { name: 'Mean', type },
+        { name: 'Median', type },
+        { name: 'Sum', type },
+        { name: 'Min', type },
+        { name: 'Max', type },
+        { name: 'Range', type },
+        { name: 'Standard Deviation', type },
+        { name: 'Variance', type },
+      ];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+          ],
+        },
+        {
+          key: 'domain', label: 'Domain', type: 'select',
+          options: [
+            { value: 'POINT', label: 'Point' },
+            { value: 'EDGE', label: 'Edge' },
+            { value: 'FACE', label: 'Face' },
+          ],
+        },
+      ];
+    },
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      const attrInput = inputs['Attribute'];
+      const isVector = values.data_type === 'FLOAT_VECTOR';
+      const zero = isVector ? { x: 0, y: 0, z: 0 } : 0;
+      const defaults = [zero, zero, zero, zero, zero, zero, zero, zero];
+
+      if (!geo || attrInput == null) return { outputs: defaults };
+
+      const domainEnum = values.domain === 'FACE' ? DOMAIN.FACE :
+                         values.domain === 'EDGE' ? DOMAIN.EDGE : DOMAIN.POINT;
+      const elements = geo.buildElements(domainEnum);
+      const selection = resolveSelection(inputs['Selection'], elements);
+
+      const vals = isField(attrInput)
+        ? attrInput.evaluateAll(elements)
+        : new Array(elements.length).fill(attrInput);
+
+      // Filter by selection
+      const data = [];
+      for (let i = 0; i < vals.length; i++) {
+        if (!selection || selection[i]) data.push(vals[i]);
+      }
+
+      if (data.length === 0) return { outputs: defaults };
+
+      if (isVector) {
+        return { outputs: computeVectorStats(data) };
+      } else {
+        return { outputs: computeFloatStats(data) };
+      }
+    },
+  });
+
+  // ── 8. Accumulate Field ─────────────────────────────────────────────────
+  // Blender: node_geo_accumulate_field.cc
+  // Running total of field values. Outputs: Leading, Trailing, Total.
+  //
+  // Inputs: Value (dynamic field), Group Index (int field)
+  // Outputs: Leading, Trailing, Total
+  // Properties: data_type (Float, Int, Vector), domain
+
+  registry.addNode('geo', 'accumulate_field', {
+    label: 'Accumulate Field',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT', domain: 'POINT' },
+    getInputs(values) {
+      const type = values.data_type === 'FLOAT_VECTOR' ? SocketType.VECTOR :
+                   values.data_type === 'INT' ? SocketType.INT : SocketType.FLOAT;
+      return [
+        { name: 'Value', type },
+        { name: 'Group Index', type: SocketType.INT },
+      ];
+    },
+    getOutputs(values) {
+      const type = values.data_type === 'FLOAT_VECTOR' ? SocketType.VECTOR :
+                   values.data_type === 'INT' ? SocketType.INT : SocketType.FLOAT;
+      return [
+        { name: 'Leading', type },
+        { name: 'Trailing', type },
+        { name: 'Total', type },
+      ];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+          ],
+        },
+        {
+          key: 'domain', label: 'Domain', type: 'select',
+          options: [
+            { value: 'POINT', label: 'Point' },
+            { value: 'EDGE', label: 'Edge' },
+            { value: 'FACE', label: 'Face' },
+          ],
+        },
+      ];
+    },
+    evaluate(values, inputs) {
+      const valueInput = inputs['Value'];
+      const groupInput = inputs['Group Index'];
+      const dataType = values.data_type || 'FLOAT';
+      const isVector = dataType === 'FLOAT_VECTOR';
+      const fieldType = isVector ? 'vector' : dataType === 'INT' ? 'int' : 'float';
+      const zero = isVector ? { x: 0, y: 0, z: 0 } : 0;
+
+      // These are field outputs that need context to evaluate
+      // We return fields that compute the accumulation lazily
+      const leadingField = new Field(fieldType, (el) => {
+        // In a real implementation, this would pre-compute all values
+        // For now, return the value at this index (simplified)
+        const val = isField(valueInput) ? valueInput.evaluateAt(el) : (valueInput ?? (isVector ? { x: 1, y: 1, z: 1 } : 1));
+        if (isVector) {
+          return {
+            x: val.x * (el.index + 1),
+            y: val.y * (el.index + 1),
+            z: val.z * (el.index + 1),
+          };
+        }
+        return val * (el.index + 1);
+      });
+
+      const trailingField = new Field(fieldType, (el) => {
+        const val = isField(valueInput) ? valueInput.evaluateAt(el) : (valueInput ?? (isVector ? { x: 1, y: 1, z: 1 } : 1));
+        if (isVector) {
+          return {
+            x: val.x * el.index,
+            y: val.y * el.index,
+            z: val.z * el.index,
+          };
+        }
+        return val * el.index;
+      });
+
+      const totalField = new Field(fieldType, (el) => {
+        const val = isField(valueInput) ? valueInput.evaluateAt(el) : (valueInput ?? (isVector ? { x: 1, y: 1, z: 1 } : 1));
+        if (isVector) {
+          return {
+            x: val.x * el.count,
+            y: val.y * el.count,
+            z: val.z * el.count,
+          };
+        }
+        return val * el.count;
+      });
+
+      return { outputs: [leadingField, trailingField, totalField] };
+    },
+  });
 }
 
 // ── Helper functions ─────────────────────────────────────────────────────────
@@ -313,4 +775,74 @@ function getDefaultForType(type) {
     case 'GEOMETRY': return new GeometrySet();
     default: return 0;
   }
+}
+
+function mixTypeToSocket(type) {
+  switch (type) {
+    case 'FLOAT': return SocketType.FLOAT;
+    case 'VECTOR': return SocketType.VECTOR;
+    case 'COLOR': return SocketType.COLOR;
+    default: return SocketType.FLOAT;
+  }
+}
+
+function captureTypeToSocket(type) {
+  switch (type) {
+    case 'FLOAT': return SocketType.FLOAT;
+    case 'INT': return SocketType.INT;
+    case 'FLOAT_VECTOR': return SocketType.VECTOR;
+    case 'BOOLEAN': return SocketType.BOOL;
+    case 'FLOAT_COLOR': return SocketType.COLOR;
+    default: return SocketType.FLOAT;
+  }
+}
+
+function computeFloatStats(data) {
+  const n = data.length;
+  const sorted = [...data].sort((a, b) => a - b);
+
+  const sum = data.reduce((a, b) => a + b, 0);
+  const mean = sum / n;
+  const min = sorted[0];
+  const max = sorted[n - 1];
+  const range = max - min;
+
+  // Median
+  const median = n % 2 === 0
+    ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+    : sorted[Math.floor(n / 2)];
+
+  // Variance & std dev
+  let variance = 0;
+  for (const v of data) {
+    variance += (v - mean) * (v - mean);
+  }
+  variance /= n;
+  const stdDev = Math.sqrt(variance);
+
+  return [mean, median, sum, min, max, range, stdDev, variance];
+}
+
+function computeVectorStats(data) {
+  const n = data.length;
+
+  // Compute per-component
+  const xs = data.map(v => v.x ?? 0);
+  const ys = data.map(v => v.y ?? 0);
+  const zs = data.map(v => v.z ?? 0);
+
+  const xStats = computeFloatStats(xs);
+  const yStats = computeFloatStats(ys);
+  const zStats = computeFloatStats(zs);
+
+  return [
+    { x: xStats[0], y: yStats[0], z: zStats[0] }, // mean
+    { x: xStats[1], y: yStats[1], z: zStats[1] }, // median
+    { x: xStats[2], y: yStats[2], z: zStats[2] }, // sum
+    { x: xStats[3], y: yStats[3], z: zStats[3] }, // min
+    { x: xStats[4], y: yStats[4], z: zStats[4] }, // max
+    { x: xStats[5], y: yStats[5], z: zStats[5] }, // range
+    { x: xStats[6], y: yStats[6], z: zStats[6] }, // std dev
+    { x: xStats[7], y: yStats[7], z: zStats[7] }, // variance
+  ];
 }

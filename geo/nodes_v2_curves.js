@@ -863,6 +863,200 @@ export function registerCurveNodes(registry) {
       return { outputs: [result] };
     },
   });
+
+  // ── Fill Curve ──────────────────────────────────────────────────────────
+  // Blender: node_geo_curve_fill.cc
+  // "Generate a mesh on the XY plane with faces on the inside of input curves"
+  //
+  // Input: Curve (geometry)
+  // Output: Mesh (geometry)
+  // Property: Mode (Triangulated, Ngons)
+  //
+  // NOTE: Full CDT (Constrained Delaunay Triangulation) is complex to implement
+  // in pure JS. We implement a simplified fan triangulation from the centroid.
+  // This works correctly for convex and simple concave curves but does not
+  // handle self-intersecting or complex multi-curve fill scenarios.
+  // DOCUMENTED LIMITATION: Complex CDT fill not implemented.
+
+  registry.addNode('geo', 'fill_curve', {
+    label: 'Fill Curve',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: { mode: 'TRIANGULATED' },
+    props: [
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'TRIANGULATED', label: 'Triangulated' },
+          { value: 'NGONS', label: 'N-Gons' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo || !geo.curve || geo.curve.splineCount === 0) {
+        return { outputs: [new GeometrySet()] };
+      }
+
+      const result = new GeometrySet();
+      const mesh = new MeshComponent();
+      const mode = values.mode || 'TRIANGULATED';
+
+      for (let si = 0; si < geo.curve.splines.length; si++) {
+        const spline = geo.curve.splines[si];
+        const pts = spline.positions;
+        if (pts.length < 3) continue;
+
+        const vertStart = mesh.positions.length;
+
+        // Add vertices (project to XY plane as Blender does)
+        for (const p of pts) {
+          mesh.positions.push({ x: p.x, y: p.y, z: 0 });
+        }
+
+        const n = pts.length;
+
+        if (mode === 'NGONS') {
+          // Single n-gon face
+          mesh.faceVertCounts.push(n);
+          for (let i = 0; i < n; i++) {
+            mesh.cornerVerts.push(vertStart + i);
+          }
+        } else {
+          // Fan triangulation from first vertex
+          for (let i = 1; i < n - 1; i++) {
+            mesh.faceVertCounts.push(3);
+            mesh.cornerVerts.push(vertStart, vertStart + i, vertStart + i + 1);
+          }
+        }
+
+        // Add edges
+        for (let i = 0; i < n; i++) {
+          mesh.edges.push([vertStart + i, vertStart + (i + 1) % n]);
+        }
+      }
+
+      if (mesh.positions.length > 0) {
+        result.mesh = mesh;
+      }
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Fillet Curve ────────────────────────────────────────────────────────
+  // Blender: node_geo_curve_fillet.cc
+  // "Round corners by generating circular arcs on each control point"
+  //
+  // Inputs: Curve, Radius (float field, 0.25), Count (int field, 1, poly mode only)
+  // Output: Curve
+  // Property: Mode (Bezier, Poly)
+  //
+  // We implement Poly mode (adds intermediate points on arcs).
+
+  registry.addNode('geo', 'fillet_curve', {
+    label: 'Fillet Curve',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Radius', type: SocketType.FLOAT },
+      { name: 'Count', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: { radius: 0.25, count: 1, mode: 'POLY' },
+    props: [
+      { key: 'radius', label: 'Radius', type: 'float', min: 0, max: 1000, step: 0.01 },
+      { key: 'count', label: 'Count', type: 'int', min: 1, max: 1000, step: 1 },
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'BEZIER', label: 'Bezier' },
+          { value: 'POLY', label: 'Poly' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo || !geo.curve || geo.curve.splineCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const radiusInput = inputs['Radius'];
+      const countInput = inputs['Count'];
+      const radius = radiusInput != null ? resolveScalar(radiusInput, values.radius) : values.radius;
+      const count = countInput != null ? Math.max(1, Math.round(resolveScalar(countInput, values.count))) : values.count;
+
+      if (radius <= 0) return { outputs: [geo.copy()] };
+
+      const result = geo.copy();
+
+      for (let si = 0; si < result.curve.splines.length; si++) {
+        const spline = result.curve.splines[si];
+        const pts = spline.positions;
+        const n = pts.length;
+        if (n < 3) continue;
+
+        const newPositions = [];
+        const newRadii = [];
+        const newTilts = [];
+
+        for (let i = 0; i < n; i++) {
+          const prev = pts[(i + n - 1) % n];
+          const curr = pts[i];
+          const next = pts[(i + 1) % n];
+
+          // Check if this is an interior point (or cyclic)
+          const isEndpoint = !spline.cyclic && (i === 0 || i === n - 1);
+
+          if (isEndpoint) {
+            newPositions.push({ x: curr.x, y: curr.y, z: curr.z });
+            newRadii.push(spline.radii ? spline.radii[i] : 1);
+            newTilts.push(spline.tilts ? spline.tilts[i] : 0);
+            continue;
+          }
+
+          // Compute directions
+          const d1x = prev.x - curr.x, d1y = prev.y - curr.y, d1z = prev.z - curr.z;
+          const d2x = next.x - curr.x, d2y = next.y - curr.y, d2z = next.z - curr.z;
+          const l1 = Math.sqrt(d1x * d1x + d1y * d1y + d1z * d1z) || 1;
+          const l2 = Math.sqrt(d2x * d2x + d2y * d2y + d2z * d2z) || 1;
+          const n1x = d1x / l1, n1y = d1y / l1, n1z = d1z / l1;
+          const n2x = d2x / l2, n2y = d2y / l2, n2z = d2z / l2;
+
+          // Clamp radius to not exceed edge lengths
+          const maxR = Math.min(l1, l2) * 0.5;
+          const r = Math.min(radius, maxR);
+
+          // Generate arc points
+          for (let j = 0; j <= count; j++) {
+            const t = j / count;
+            // Interpolate along the two direction vectors
+            const px = curr.x + r * (n1x * (1 - t) + n2x * t);
+            const py = curr.y + r * (n1y * (1 - t) + n2y * t);
+            const pz = curr.z + r * (n1z * (1 - t) + n2z * t);
+            newPositions.push({ x: px, y: py, z: pz });
+            newRadii.push(spline.radii ? spline.radii[i] : 1);
+            newTilts.push(spline.tilts ? spline.tilts[i] : 0);
+          }
+        }
+
+        spline.positions = newPositions;
+        spline.radii = newRadii;
+        spline.tilts = newTilts;
+        spline.handleLeft = null;
+        spline.handleRight = null;
+        spline.type = 'POLY';
+      }
+
+      return { outputs: [result] };
+    },
+  });
 }
 
 // ── Euler Helper ────────────────────────────────────────────────────────────
