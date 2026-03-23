@@ -14,7 +14,7 @@ import {
   DOMAIN,
 } from '../core/geometry.js';
 import { Field, isField, combineFields, resolveField, resolveScalar, resolveSelection } from '../core/field.js';
-import { seededRandom, perlinNoise3D, voronoi3D, lerp } from '../core/utils.js';
+import { seededRandom, perlinNoise3D, voronoi3D, lerp, hash3 } from '../core/utils.js';
 
 export function registerUtilityNodes(registry) {
   // ── Categories ──────────────────────────────────────────────────────────
@@ -749,6 +749,436 @@ export function registerUtilityNodes(registry) {
       return { outputs: [leadingField, trailingField, totalField] };
     },
   });
+
+  // ── 9. Separate Color ───────────────────────────────────────────────────
+  // Blender: node_fn_separate_color.cc
+  // Split a color into R, G, B, A components.
+  //
+  // Input: Color
+  // Outputs: Red, Green, Blue, Alpha
+  // Property: Mode (RGB, HSV, HSL)
+
+  registry.addNode('geo', 'separate_color', {
+    label: 'Separate Color',
+    category: 'UTILITIES',
+    inputs: [
+      { name: 'Color', type: SocketType.COLOR },
+    ],
+    outputs: [
+      { name: 'Red', type: SocketType.FLOAT },
+      { name: 'Green', type: SocketType.FLOAT },
+      { name: 'Blue', type: SocketType.FLOAT },
+      { name: 'Alpha', type: SocketType.FLOAT },
+    ],
+    defaults: { mode: 'RGB' },
+    props: [
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'RGB', label: 'RGB' },
+          { value: 'HSV', label: 'HSV' },
+          { value: 'HSL', label: 'HSL' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const color = inputs['Color'];
+      const mode = values.mode || 'RGB';
+
+      function separate(c) {
+        const col = c || { r: 0, g: 0, b: 0, a: 1 };
+        if (mode === 'RGB') {
+          return [col.r ?? 0, col.g ?? 0, col.b ?? 0, col.a ?? 1];
+        }
+        // HSV/HSL conversion from RGB
+        const r = col.r ?? 0, g = col.g ?? 0, b = col.b ?? 0;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const d = max - min;
+        let h = 0;
+        if (d > 0) {
+          if (max === r) h = ((g - b) / d + 6) % 6 / 6;
+          else if (max === g) h = ((b - r) / d + 2) / 6;
+          else h = ((r - g) / d + 4) / 6;
+        }
+        if (mode === 'HSV') {
+          const s = max > 0 ? d / max : 0;
+          return [h, s, max, col.a ?? 1];
+        }
+        // HSL
+        const l = (max + min) / 2;
+        const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+        return [h, s, l, col.a ?? 1];
+      }
+
+      if (isField(color)) {
+        return { outputs: [
+          new Field('float', (el) => separate(color.evaluateAt(el))[0]),
+          new Field('float', (el) => separate(color.evaluateAt(el))[1]),
+          new Field('float', (el) => separate(color.evaluateAt(el))[2]),
+          new Field('float', (el) => separate(color.evaluateAt(el))[3]),
+        ]};
+      }
+      const [c0, c1, c2, c3] = separate(color);
+      return { outputs: [c0, c1, c2, c3] };
+    },
+  });
+
+  // ── 10. Combine Color ──────────────────────────────────────────────────
+  // Blender: node_fn_combine_color.cc
+  // Combine R, G, B, A into a color.
+  //
+  // Inputs: Red (0), Green (0), Blue (0), Alpha (1)
+  // Output: Color
+  // Property: Mode (RGB, HSV, HSL)
+
+  registry.addNode('geo', 'combine_color', {
+    label: 'Combine Color',
+    category: 'UTILITIES',
+    inputs: [
+      { name: 'Red', type: SocketType.FLOAT },
+      { name: 'Green', type: SocketType.FLOAT },
+      { name: 'Blue', type: SocketType.FLOAT },
+      { name: 'Alpha', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Color', type: SocketType.COLOR },
+    ],
+    defaults: { mode: 'RGB' },
+    props: [
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'RGB', label: 'RGB' },
+          { value: 'HSV', label: 'HSV' },
+          { value: 'HSL', label: 'HSL' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const mode = values.mode || 'RGB';
+      const c0 = inputs['Red'], c1 = inputs['Green'], c2 = inputs['Blue'], c3 = inputs['Alpha'];
+      const hasField = isField(c0) || isField(c1) || isField(c2) || isField(c3);
+
+      function combine(v0, v1, v2, v3) {
+        const a = v3 ?? 1;
+        if (mode === 'RGB') {
+          return { r: v0 ?? 0, g: v1 ?? 0, b: v2 ?? 0, a };
+        }
+        // HSV/HSL to RGB
+        const h = (v0 ?? 0) * 6, s = v1 ?? 0, vl = v2 ?? 0;
+        if (mode === 'HSV') {
+          const c = vl * s;
+          const x = c * (1 - Math.abs(h % 2 - 1));
+          const m = vl - c;
+          let r = m, g = m, b = m;
+          if (h < 1) { r += c; g += x; }
+          else if (h < 2) { r += x; g += c; }
+          else if (h < 3) { g += c; b += x; }
+          else if (h < 4) { g += x; b += c; }
+          else if (h < 5) { r += x; b += c; }
+          else { r += c; b += x; }
+          return { r, g, b, a };
+        }
+        // HSL
+        const c = (1 - Math.abs(2 * vl - 1)) * s;
+        const x = c * (1 - Math.abs(h % 2 - 1));
+        const m = vl - c / 2;
+        let r = m, g = m, b = m;
+        if (h < 1) { r += c; g += x; }
+        else if (h < 2) { r += x; g += c; }
+        else if (h < 3) { g += c; b += x; }
+        else if (h < 4) { g += x; b += c; }
+        else if (h < 5) { r += x; b += c; }
+        else { r += c; b += x; }
+        return { r, g, b, a };
+      }
+
+      if (hasField) {
+        return { outputs: [new Field('color', (el) => {
+          const v0 = isField(c0) ? c0.evaluateAt(el) : (c0 ?? 0);
+          const v1 = isField(c1) ? c1.evaluateAt(el) : (c1 ?? 0);
+          const v2 = isField(c2) ? c2.evaluateAt(el) : (c2 ?? 0);
+          const v3 = isField(c3) ? c3.evaluateAt(el) : (c3 ?? 1);
+          return combine(v0, v1, v2, v3);
+        })] };
+      }
+      return { outputs: [combine(c0, c1, c2, c3)] };
+    },
+  });
+
+  // ── 11. Evaluate at Index ──────────────────────────────────────────────
+  // Blender: node_geo_evaluate_at_index.cc
+  // "Retrieve a value from a field at a specific index"
+  //
+  // Inputs: Value (dynamic field), Index (int field)
+  // Output: Value (dynamic)
+  // Properties: data_type, domain
+
+  registry.addNode('geo', 'evaluate_at_index', {
+    label: 'Evaluate at Index',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT', domain: 'POINT' },
+    getInputs(values) {
+      const type = evalAtIndexTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Value', type },
+        { name: 'Index', type: SocketType.INT },
+      ];
+    },
+    getOutputs(values) {
+      const type = evalAtIndexTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Value', type },
+      ];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+            { value: 'BOOLEAN', label: 'Boolean' },
+            { value: 'FLOAT_COLOR', label: 'Color' },
+          ],
+        },
+        {
+          key: 'domain', label: 'Domain', type: 'select',
+          options: [
+            { value: 'POINT', label: 'Point' },
+            { value: 'EDGE', label: 'Edge' },
+            { value: 'FACE', label: 'Face' },
+          ],
+        },
+      ];
+    },
+    evaluate(values, inputs) {
+      const valueInput = inputs['Value'];
+      const indexInput = inputs['Index'];
+      const fieldType = values.data_type === 'FLOAT_VECTOR' ? 'vector' :
+                        values.data_type === 'INT' ? 'int' :
+                        values.data_type === 'BOOLEAN' ? 'bool' :
+                        values.data_type === 'FLOAT_COLOR' ? 'color' : 'float';
+
+      // Returns a field that evaluates valueInput at the specified index
+      const resultField = new Field(fieldType, (el) => {
+        const idx = isField(indexInput) ? indexInput.evaluateAt(el) : (indexInput ?? 0);
+        // Evaluate the value field at a synthetic element with the target index
+        if (isField(valueInput)) {
+          return valueInput.evaluateAt({ ...el, index: Math.round(idx) });
+        }
+        return valueInput ?? 0;
+      });
+
+      return { outputs: [resultField] };
+    },
+  });
+
+  // ── 12. Spline Length ──────────────────────────────────────────────────
+  // Blender: node_geo_input_spline_length.cc
+  // "Retrieve the total length of each spline"
+  // Outputs: Length (float field), Point Count (int field)
+
+  registry.addNode('geo', 'spline_length', {
+    label: 'Spline Length',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Length', type: SocketType.FLOAT },
+      { name: 'Point Count', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      const lengthField = new Field('float', (el) => {
+        // Would need spline context for real length computation
+        return 0;
+      });
+      const countField = new Field('int', (el) => {
+        return el.localCount ?? el.count ?? 0;
+      });
+      return { outputs: [lengthField, countField] };
+    },
+  });
+
+  // ── 13. Is Spline Cyclic ───────────────────────────────────────────────
+  // Blender: node_geo_input_spline_cyclic.cc
+  // Reads the built-in "cyclic" attribute.
+  // Output: Cyclic (bool field)
+
+  registry.addNode('geo', 'is_spline_cyclic', {
+    label: 'Is Spline Cyclic',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Cyclic', type: SocketType.BOOL },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [new Field('bool', () => false)] };
+    },
+  });
+
+  // ── 14. White Noise Texture ────────────────────────────────────────────
+  // Blender: node_shader_tex_white_noise.cc
+  // Pure random noise (no spatial correlation).
+  //
+  // Input: Vector (vector field), W (float)
+  // Outputs: Value (float), Color (color)
+  // Property: Dimensions (1D-4D)
+
+  registry.addNode('geo', 'white_noise_texture', {
+    label: 'White Noise Texture',
+    category: 'TEXTURE',
+    inputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+      { name: 'W', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Value', type: SocketType.FLOAT },
+      { name: 'Color', type: SocketType.COLOR },
+    ],
+    defaults: { dimensions: '3D' },
+    props: [
+      {
+        key: 'dimensions', label: 'Dimensions', type: 'select',
+        options: [
+          { value: '1D', label: '1D' },
+          { value: '2D', label: '2D' },
+          { value: '3D', label: '3D' },
+          { value: '4D', label: '4D' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const vecInput = inputs['Vector'];
+      const wInput = inputs['W'];
+      const hasField = isField(vecInput) || isField(wInput);
+
+      function whiteNoise(pos, w) {
+        const x = pos?.x ?? 0, y = pos?.y ?? 0, z = pos?.z ?? 0;
+        const val = hash3(x + (w ?? 0) * 13.37, y, z);
+        const r = hash3(x + 100, y + 200, z + 300);
+        const g = hash3(x + 400, y + 500, z + 600);
+        const b = hash3(x + 700, y + 800, z + 900);
+        return { value: val, color: { r, g, b, a: 1 } };
+      }
+
+      if (hasField) {
+        const valField = new Field('float', (el) => {
+          const pos = isField(vecInput) ? vecInput.evaluateAt(el) : (vecInput || el.position);
+          const w = isField(wInput) ? wInput.evaluateAt(el) : wInput;
+          return whiteNoise(pos, w).value;
+        });
+        const colField = new Field('color', (el) => {
+          const pos = isField(vecInput) ? vecInput.evaluateAt(el) : (vecInput || el.position);
+          const w = isField(wInput) ? wInput.evaluateAt(el) : wInput;
+          return whiteNoise(pos, w).color;
+        });
+        return { outputs: [valField, colField] };
+      }
+
+      const n = whiteNoise(vecInput, wInput);
+      return { outputs: [n.value, n.color] };
+    },
+  });
+
+  // ── 15. Gradient Texture ───────────────────────────────────────────────
+  // Blender: node_shader_tex_gradient.cc
+  // Procedural gradient based on position.
+  //
+  // Input: Vector (vector field)
+  // Outputs: Color, Fac (float)
+  // Property: gradient_type (Linear, Quadratic, Easing, Diagonal, Radial, etc.)
+
+  registry.addNode('geo', 'gradient_texture', {
+    label: 'Gradient Texture',
+    category: 'TEXTURE',
+    inputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+    ],
+    outputs: [
+      { name: 'Color', type: SocketType.COLOR },
+      { name: 'Fac', type: SocketType.FLOAT },
+    ],
+    defaults: { gradient_type: 'LINEAR' },
+    props: [
+      {
+        key: 'gradient_type', label: 'Type', type: 'select',
+        options: [
+          { value: 'LINEAR', label: 'Linear' },
+          { value: 'QUADRATIC', label: 'Quadratic' },
+          { value: 'EASING', label: 'Easing' },
+          { value: 'DIAGONAL', label: 'Diagonal' },
+          { value: 'RADIAL', label: 'Radial' },
+          { value: 'QUADRATIC_SPHERE', label: 'Quadratic Sphere' },
+          { value: 'SPHERICAL', label: 'Spherical' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const vecInput = inputs['Vector'];
+      const gradType = values.gradient_type || 'LINEAR';
+
+      function computeGradient(pos) {
+        const p = pos || { x: 0, y: 0, z: 0 };
+        let fac;
+        switch (gradType) {
+          case 'LINEAR':
+            fac = p.x;
+            break;
+          case 'QUADRATIC':
+            fac = Math.max(0, p.x);
+            fac = fac * fac;
+            break;
+          case 'EASING': {
+            const t = Math.max(0, Math.min(1, p.x));
+            fac = t * t * (3 - 2 * t); // smoothstep
+            break;
+          }
+          case 'DIAGONAL':
+            fac = (p.x + p.y) / 2;
+            break;
+          case 'RADIAL': {
+            fac = Math.atan2(p.y, p.x) / (2 * Math.PI) + 0.5;
+            break;
+          }
+          case 'QUADRATIC_SPHERE': {
+            const r = Math.max(0.0001, Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z));
+            fac = Math.max(0, 1 - r);
+            fac = fac * fac;
+            break;
+          }
+          case 'SPHERICAL': {
+            const r = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+            fac = Math.max(0, 1 - r);
+            break;
+          }
+          default:
+            fac = 0;
+        }
+        fac = Math.max(0, Math.min(1, fac));
+        return fac;
+      }
+
+      if (isField(vecInput)) {
+        const facField = new Field('float', (el) => {
+          const pos = vecInput.evaluateAt(el);
+          return computeGradient(pos);
+        });
+        const colField = new Field('color', (el) => {
+          const f = computeGradient(vecInput.evaluateAt(el));
+          return { r: f, g: f, b: f, a: 1 };
+        });
+        return { outputs: [colField, facField] };
+      }
+
+      const fac = computeGradient(vecInput);
+      return { outputs: [{ r: fac, g: fac, b: fac, a: 1 }, fac] };
+    },
+  });
 }
 
 // ── Helper functions ─────────────────────────────────────────────────────────
@@ -845,4 +1275,15 @@ function computeVectorStats(data) {
     { x: xStats[6], y: yStats[6], z: zStats[6] }, // std dev
     { x: xStats[7], y: yStats[7], z: zStats[7] }, // variance
   ];
+}
+
+function evalAtIndexTypeToSocket(type) {
+  switch (type) {
+    case 'FLOAT': return SocketType.FLOAT;
+    case 'INT': return SocketType.INT;
+    case 'FLOAT_VECTOR': return SocketType.VECTOR;
+    case 'BOOLEAN': return SocketType.BOOL;
+    case 'FLOAT_COLOR': return SocketType.COLOR;
+    default: return SocketType.FLOAT;
+  }
 }

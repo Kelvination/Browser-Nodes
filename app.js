@@ -16,6 +16,7 @@ import { registerRotationNodes } from './geo/nodes_v2_rotation.js';
 import { registerMeshOpNodes } from './geo/nodes_v2_mesh_ops.js';
 import { registerUtilityNodes } from './geo/nodes_v2_utilities.js';
 import { registerSamplingNodes } from './geo/nodes_v2_sampling.js';
+import { registerMeshReadNodes } from './geo/nodes_v2_mesh_read.js';
 
 // Register all v2 geometry nodes
 registerPrimitiveNodes(registry);
@@ -27,6 +28,7 @@ registerRotationNodes(registry);
 registerMeshOpNodes(registry);
 registerUtilityNodes(registry);
 registerSamplingNodes(registry);
+registerMeshReadNodes(registry);
 
 // Import shader nodes (unchanged)
 import './shader/nodes.js';
