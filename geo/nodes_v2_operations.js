@@ -2,7 +2,8 @@
  * geo/nodes_v2_operations.js - Geometry operation and instance nodes.
  *
  * Nodes: set_position, transform_geometry, delete_geometry,
- *        join_geometry, instance_on_points, realize_instances
+ *        join_geometry, instance_on_points, realize_instances,
+ *        translate_instances, scale_instances, rotate_instances
  */
 
 import { SocketType } from '../core/registry.js';
@@ -596,4 +597,211 @@ export function registerOperationNodes(registry) {
       return { outputs: [result] };
     },
   });
+
+  // ── 7. Translate Instances ──────────────────────────────────────────────
+  // Blender: node_geo_translate_instances.cc
+  // Inputs: Instances (geometry), Selection (bool field), Translation (vector field),
+  //         Local Space (bool field, default true)
+  // Output: Instances (geometry)
+
+  registry.addNode('geo', 'translate_instances', {
+    label: 'Translate Instances',
+    category: 'INSTANCE',
+    inputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'Translation', type: SocketType.VECTOR },
+      { name: 'Local Space', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Instances'];
+      if (!geo || !geo.instances || geo.instances.instanceCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const result = geo.copy();
+      const inst = result.instances;
+      const elements = inst.buildElements(DOMAIN.INSTANCE);
+      const selection = resolveSelection(inputs['Selection'], elements);
+      const translationInput = inputs['Translation'];
+
+      if (translationInput == null) return { outputs: [result] };
+
+      const translations = isField(translationInput)
+        ? translationInput.evaluateAll(elements)
+        : new Array(elements.length).fill(translationInput);
+
+      for (let i = 0; i < inst.instanceCount; i++) {
+        if (selection && !selection[i]) continue;
+        const t = translations[i] || { x: 0, y: 0, z: 0 };
+        inst.transforms[i].position.x += t.x;
+        inst.transforms[i].position.y += t.y;
+        inst.transforms[i].position.z += t.z;
+      }
+
+      return { outputs: [result] };
+    },
+  });
+
+  // ── 8. Scale Instances ──────────────────────────────────────────────────
+  // Blender: node_geo_scale_instances.cc
+  // Inputs: Instances, Selection (bool field), Scale (vector field, default {1,1,1}),
+  //         Center (vector field), Local Space (bool field, default true)
+  // Output: Instances
+
+  registry.addNode('geo', 'scale_instances', {
+    label: 'Scale Instances',
+    category: 'INSTANCE',
+    inputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'Scale', type: SocketType.VECTOR },
+      { name: 'Center', type: SocketType.VECTOR },
+      { name: 'Local Space', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Instances'];
+      if (!geo || !geo.instances || geo.instances.instanceCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const result = geo.copy();
+      const inst = result.instances;
+      const elements = inst.buildElements(DOMAIN.INSTANCE);
+      const selection = resolveSelection(inputs['Selection'], elements);
+      const scaleInput = inputs['Scale'];
+      const centerInput = inputs['Center'];
+
+      if (scaleInput == null) return { outputs: [result] };
+
+      const scales = isField(scaleInput)
+        ? scaleInput.evaluateAll(elements)
+        : new Array(elements.length).fill(scaleInput);
+      const centers = centerInput != null
+        ? (isField(centerInput) ? centerInput.evaluateAll(elements) : new Array(elements.length).fill(centerInput))
+        : null;
+
+      for (let i = 0; i < inst.instanceCount; i++) {
+        if (selection && !selection[i]) continue;
+        const s = scales[i] || { x: 1, y: 1, z: 1 };
+        const t = inst.transforms[i];
+
+        // Scale relative to center point
+        const cx = centers ? (centers[i]?.x ?? 0) : 0;
+        const cy = centers ? (centers[i]?.y ?? 0) : 0;
+        const cz = centers ? (centers[i]?.z ?? 0) : 0;
+
+        t.position.x = cx + (t.position.x - cx) * s.x;
+        t.position.y = cy + (t.position.y - cy) * s.y;
+        t.position.z = cz + (t.position.z - cz) * s.z;
+        t.scale.x *= s.x;
+        t.scale.y *= s.y;
+        t.scale.z *= s.z;
+      }
+
+      return { outputs: [result] };
+    },
+  });
+
+  // ── 9. Rotate Instances ─────────────────────────────────────────────────
+  // Blender: node_geo_rotate_instances.cc
+  // Inputs: Instances, Selection (bool field), Rotation (vector/euler field),
+  //         Pivot Point (vector field), Local Space (bool field, default true)
+  // Output: Instances
+  //
+  // Note: Blender uses quaternion Rotation type. We use Euler vector since
+  // our system doesn't have a dedicated Rotation socket type.
+
+  registry.addNode('geo', 'rotate_instances', {
+    label: 'Rotate Instances',
+    category: 'INSTANCE',
+    inputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'Rotation', type: SocketType.VECTOR },
+      { name: 'Pivot Point', type: SocketType.VECTOR },
+      { name: 'Local Space', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Instances'];
+      if (!geo || !geo.instances || geo.instances.instanceCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const result = geo.copy();
+      const inst = result.instances;
+      const elements = inst.buildElements(DOMAIN.INSTANCE);
+      const selection = resolveSelection(inputs['Selection'], elements);
+      const rotInput = inputs['Rotation'];
+      const pivotInput = inputs['Pivot Point'];
+
+      if (rotInput == null) return { outputs: [result] };
+
+      const rotations = isField(rotInput)
+        ? rotInput.evaluateAll(elements)
+        : new Array(elements.length).fill(rotInput);
+      const pivots = pivotInput != null
+        ? (isField(pivotInput) ? pivotInput.evaluateAll(elements) : new Array(elements.length).fill(pivotInput))
+        : null;
+
+      for (let i = 0; i < inst.instanceCount; i++) {
+        if (selection && !selection[i]) continue;
+        const r = rotations[i] || { x: 0, y: 0, z: 0 };
+        const t = inst.transforms[i];
+
+        // Add rotation (simplified: just add euler angles)
+        t.rotation.x += r.x;
+        t.rotation.y += r.y;
+        t.rotation.z += r.z;
+
+        // Apply pivot point offset
+        if (pivots) {
+          const px = pivots[i]?.x ?? 0;
+          const py = pivots[i]?.y ?? 0;
+          const pz = pivots[i]?.z ?? 0;
+
+          // Rotate position around pivot
+          const dx = t.position.x - px;
+          const dy = t.position.y - py;
+          const dz = t.position.z - pz;
+
+          const rotated = applyRotationToPoint(dx, dy, dz, r.x, r.y, r.z);
+          t.position.x = px + rotated.x;
+          t.position.y = py + rotated.y;
+          t.position.z = pz + rotated.z;
+        }
+      }
+
+      return { outputs: [result] };
+    },
+  });
+}
+
+// ── Helper: rotate a point by euler angles (XYZ order) ─────────────────────
+function applyRotationToPoint(x, y, z, rx, ry, rz) {
+  // Rotate around X
+  let y1 = y * Math.cos(rx) - z * Math.sin(rx);
+  let z1 = y * Math.sin(rx) + z * Math.cos(rx);
+  // Rotate around Y
+  let x2 = x * Math.cos(ry) + z1 * Math.sin(ry);
+  let z2 = -x * Math.sin(ry) + z1 * Math.cos(ry);
+  // Rotate around Z
+  let x3 = x2 * Math.cos(rz) - y1 * Math.sin(rz);
+  let y3 = x2 * Math.sin(rz) + y1 * Math.cos(rz);
+  return { x: x3, y: y3, z: z2 };
 }

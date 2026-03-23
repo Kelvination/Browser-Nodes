@@ -13,6 +13,9 @@ import { registerCurveNodes } from './geo/nodes_v2_curves.js';
 import { registerFieldNodes } from './geo/nodes_v2_fields.js';
 import { registerPointOpNodes } from './geo/nodes_v2_point_ops.js';
 import { registerRotationNodes } from './geo/nodes_v2_rotation.js';
+import { registerMeshOpNodes } from './geo/nodes_v2_mesh_ops.js';
+import { registerUtilityNodes } from './geo/nodes_v2_utilities.js';
+import { registerSamplingNodes } from './geo/nodes_v2_sampling.js';
 
 // Register all v2 geometry nodes
 registerPrimitiveNodes(registry);
@@ -21,6 +24,9 @@ registerCurveNodes(registry);
 registerFieldNodes(registry);
 registerPointOpNodes(registry);
 registerRotationNodes(registry);
+registerMeshOpNodes(registry);
+registerUtilityNodes(registry);
+registerSamplingNodes(registry);
 
 // Import shader nodes (unchanged)
 import './shader/nodes.js';
