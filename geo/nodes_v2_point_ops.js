@@ -495,6 +495,69 @@ export function registerPointOpNodes(registry) {
       return { outputs: [result, normalField, rotationField] };
     },
   });
+
+  // ── Points ──────────────────────────────────────────────────────────────
+  // Blender: node_geo_points.cc
+  // "Generate a point cloud with positions and radii"
+  //
+  // Inputs: Count (int, default 1, min 0), Position (vector field),
+  //         Radius (float field, default 0.1)
+  // Output: Points (geometry)
+
+  registry.addNode('geo', 'points', {
+    label: 'Points',
+    category: 'POINT',
+    inputs: [
+      { name: 'Count', type: SocketType.INT },
+      { name: 'Position', type: SocketType.VECTOR },
+      { name: 'Radius', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Points', type: SocketType.GEOMETRY },
+    ],
+    defaults: { count: 1, radius: 0.1 },
+    props: [
+      { key: 'count', label: 'Count', type: 'int', min: 0, max: 10000, step: 1 },
+      { key: 'radius', label: 'Radius', type: 'float', min: 0, max: 1000, step: 0.01 },
+    ],
+    evaluate(values, inputs) {
+      const count = inputs['Count'] != null ? Math.max(0, Math.round(inputs['Count'])) : values.count;
+      const posInput = inputs['Position'];
+      const radiusInput = inputs['Radius'];
+
+      if (count === 0) return { outputs: [new GeometrySet()] };
+
+      const mesh = new MeshComponent();
+
+      // Build elements for field evaluation
+      const elements = [];
+      for (let i = 0; i < count; i++) {
+        elements.push({
+          index: i,
+          count,
+          position: { x: 0, y: 0, z: 0 },
+          normal: { x: 0, y: 1, z: 0 },
+        });
+      }
+
+      // Evaluate position field
+      if (posInput != null && isField(posInput)) {
+        const positions = posInput.evaluateAll(elements);
+        for (let i = 0; i < count; i++) {
+          mesh.positions.push(positions[i] || { x: 0, y: 0, z: 0 });
+        }
+      } else {
+        const pos = posInput || { x: 0, y: 0, z: 0 };
+        for (let i = 0; i < count; i++) {
+          mesh.positions.push({ x: pos.x, y: pos.y, z: pos.z });
+        }
+      }
+
+      const result = new GeometrySet();
+      result.mesh = mesh;
+      return { outputs: [result] };
+    },
+  });
 }
 
 // ── RANDOM Distribution ─────────────────────────────────────────────────────

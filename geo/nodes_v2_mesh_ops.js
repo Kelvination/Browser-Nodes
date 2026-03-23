@@ -1344,6 +1344,119 @@ export function registerMeshOpNodes(registry) {
       return { outputs: [new GeometrySet(), new Field('int', () => 0)] };
     },
   });
+
+  // ── 11. Scale Elements ──────────────────────────────────────────────────
+  // Blender: node_geo_scale_elements.cc
+  // "Scale individual mesh elements (faces or edges)"
+  //
+  // Inputs: Geometry (mesh), Selection (bool field), Scale (float field, default 1),
+  //         Center (vector field, default position)
+  // Properties: Domain (Face, Edge), Scale Mode (Uniform, Single Axis)
+  // Output: Geometry
+
+  registry.addNode('geo', 'scale_elements', {
+    label: 'Scale Elements',
+    category: 'MESH',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'Scale', type: SocketType.FLOAT },
+      { name: 'Center', type: SocketType.VECTOR },
+    ],
+    outputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    defaults: { domain: 'FACE', scale: 1.0 },
+    props: [
+      { key: 'scale', label: 'Scale', type: 'float', min: 0, max: 100, step: 0.01 },
+      {
+        key: 'domain', label: 'Domain', type: 'select',
+        options: [
+          { value: 'FACE', label: 'Face' },
+          { value: 'EDGE', label: 'Edge' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo || !geo.mesh || geo.mesh.vertexCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const domain = values.domain || 'FACE';
+      const result = geo.copy();
+      const mesh = result.mesh;
+
+      const domainEnum = domain === 'EDGE' ? DOMAIN.EDGE : DOMAIN.FACE;
+      const elements = mesh.buildElements(domainEnum);
+      const selection = resolveSelection(inputs['Selection'], elements);
+
+      const scaleInput = inputs['Scale'];
+      const centerInput = inputs['Center'];
+
+      const scales = scaleInput != null
+        ? (isField(scaleInput) ? scaleInput.evaluateAll(elements) : new Array(elements.length).fill(scaleInput))
+        : new Array(elements.length).fill(values.scale);
+
+      if (domain === 'FACE') {
+        let cornerIdx = 0;
+        for (let fi = 0; fi < mesh.faceCount; fi++) {
+          const count = mesh.faceVertCounts[fi];
+          const verts = mesh.cornerVerts.slice(cornerIdx, cornerIdx + count);
+          cornerIdx += count;
+
+          if (selection && !selection[fi]) continue;
+
+          const s = typeof scales[fi] === 'number' ? scales[fi] : 1;
+
+          // Get center (face center or from input)
+          let center;
+          if (centerInput != null) {
+            center = isField(centerInput) ? centerInput.evaluateAt(elements[fi]) : centerInput;
+          } else {
+            center = mesh.getFaceCenter(fi);
+          }
+
+          // Scale each vertex relative to center
+          for (const vi of verts) {
+            mesh.positions[vi] = {
+              x: center.x + (mesh.positions[vi].x - center.x) * s,
+              y: center.y + (mesh.positions[vi].y - center.y) * s,
+              z: center.z + (mesh.positions[vi].z - center.z) * s,
+            };
+          }
+        }
+      } else {
+        // Edge domain
+        for (let ei = 0; ei < mesh.edges.length; ei++) {
+          if (selection && !selection[ei]) continue;
+          const s = typeof scales[ei] === 'number' ? scales[ei] : 1;
+          const [a, b] = mesh.edges[ei];
+
+          let center;
+          if (centerInput != null) {
+            center = isField(centerInput) ? centerInput.evaluateAt(elements[ei]) : centerInput;
+          } else {
+            const pa = mesh.positions[a], pb = mesh.positions[b];
+            center = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2, z: (pa.z + pb.z) / 2 };
+          }
+
+          mesh.positions[a] = {
+            x: center.x + (mesh.positions[a].x - center.x) * s,
+            y: center.y + (mesh.positions[a].y - center.y) * s,
+            z: center.z + (mesh.positions[a].z - center.z) * s,
+          };
+          mesh.positions[b] = {
+            x: center.x + (mesh.positions[b].x - center.x) * s,
+            y: center.y + (mesh.positions[b].y - center.y) * s,
+            z: center.z + (mesh.positions[b].z - center.z) * s,
+          };
+        }
+      }
+
+      return { outputs: [result] };
+    },
+  });
 }
 
 // ── Extrude Faces (Individual) ─────────────────────────────────────────────

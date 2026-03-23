@@ -864,6 +864,148 @@ export function registerCurveNodes(registry) {
     },
   });
 
+  // ── Subdivide Curve ──────────────────────────────────────────────────────
+  // Blender: node_geo_curve_subdivide.cc
+  // "Dividing each curve segment into a specified number of pieces"
+  //
+  // Inputs: Curve (geometry), Cuts (int field, default 1, min 0, max 1000)
+  // Output: Curve
+
+  registry.addNode('geo', 'subdivide_curve', {
+    label: 'Subdivide Curve',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Cuts', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: { cuts: 1 },
+    props: [
+      { key: 'cuts', label: 'Cuts', type: 'int', min: 0, max: 1000, step: 1 },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo || !geo.curve || geo.curve.splineCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const cuts = inputs['Cuts'] != null
+        ? Math.max(0, Math.round(resolveScalar(inputs['Cuts'], values.cuts)))
+        : values.cuts;
+
+      if (cuts === 0) return { outputs: [geo.copy()] };
+
+      const result = geo.copy();
+
+      for (let si = 0; si < result.curve.splines.length; si++) {
+        const spline = result.curve.splines[si];
+        const pts = spline.positions;
+        const n = pts.length;
+        if (n < 2) continue;
+
+        const newPositions = [];
+        const newRadii = [];
+        const newTilts = [];
+        const segCount = spline.cyclic ? n : n - 1;
+
+        for (let i = 0; i < segCount; i++) {
+          const p0 = pts[i];
+          const p1 = pts[(i + 1) % n];
+          const r0 = spline.radii ? spline.radii[i] : 1;
+          const r1 = spline.radii ? spline.radii[(i + 1) % n] : 1;
+          const t0 = spline.tilts ? spline.tilts[i] : 0;
+          const t1 = spline.tilts ? spline.tilts[(i + 1) % n] : 0;
+
+          newPositions.push({ x: p0.x, y: p0.y, z: p0.z });
+          newRadii.push(r0);
+          newTilts.push(t0);
+
+          for (let c = 1; c <= cuts; c++) {
+            const t = c / (cuts + 1);
+            newPositions.push({
+              x: p0.x + (p1.x - p0.x) * t,
+              y: p0.y + (p1.y - p0.y) * t,
+              z: p0.z + (p1.z - p0.z) * t,
+            });
+            newRadii.push(r0 + (r1 - r0) * t);
+            newTilts.push(t0 + (t1 - t0) * t);
+          }
+        }
+
+        // Add last point for non-cyclic
+        if (!spline.cyclic) {
+          newPositions.push({ x: pts[n - 1].x, y: pts[n - 1].y, z: pts[n - 1].z });
+          newRadii.push(spline.radii ? spline.radii[n - 1] : 1);
+          newTilts.push(spline.tilts ? spline.tilts[n - 1] : 0);
+        }
+
+        spline.positions = newPositions;
+        spline.radii = newRadii;
+        spline.tilts = newTilts;
+        spline.handleLeft = null;
+        spline.handleRight = null;
+      }
+
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Reverse Curve ──────────────────────────────────────────────────────
+  // Blender: node_geo_curve_reverse.cc
+  // "Change the direction of curves by swapping their start and end data"
+  //
+  // Inputs: Curve (geometry), Selection (bool field, default true)
+  // Output: Curve
+
+  registry.addNode('geo', 'reverse_curve', {
+    label: 'Reverse Curve',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo || !geo.curve || geo.curve.splineCount === 0) {
+        return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      }
+
+      const result = geo.copy();
+      const elements = result.curve.buildElements('SPLINE');
+      const selection = inputs['Selection'];
+
+      for (let si = 0; si < result.curve.splines.length; si++) {
+        // Check selection (per-spline)
+        if (selection != null) {
+          const sel = isField(selection)
+            ? selection.evaluateAt(elements[si] || { index: si, count: result.curve.splines.length })
+            : selection;
+          if (!sel) continue;
+        }
+
+        const spline = result.curve.splines[si];
+        spline.positions.reverse();
+        if (spline.radii) spline.radii.reverse();
+        if (spline.tilts) spline.tilts.reverse();
+        if (spline.handleLeft && spline.handleRight) {
+          // Swap and reverse handles
+          const tempLeft = spline.handleRight.reverse();
+          spline.handleRight = spline.handleLeft.reverse();
+          spline.handleLeft = tempLeft;
+        }
+      }
+
+      return { outputs: [result] };
+    },
+  });
+
   // ── Fill Curve ──────────────────────────────────────────────────────────
   // Blender: node_geo_curve_fill.cc
   // "Generate a mesh on the XY plane with faces on the inside of input curves"
