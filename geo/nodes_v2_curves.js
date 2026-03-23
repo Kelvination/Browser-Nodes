@@ -864,6 +864,318 @@ export function registerCurveNodes(registry) {
     },
   });
 
+  // ── Curve Quadrilateral ──────────────────────────────────────────────────
+  // Blender: node_geo_curve_primitive_quadrilateral.cc
+  // "Generate a polygon with four points"
+  // Property: Mode (Rectangle, Parallelogram, Trapezoid, Kite, Points)
+
+  registry.addNode('geo', 'curve_quadrilateral', {
+    label: 'Quadrilateral',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Width', type: SocketType.FLOAT },
+      { name: 'Height', type: SocketType.FLOAT },
+      { name: 'Offset', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: { width: 2.0, height: 2.0, offset: 1.0, mode: 'RECTANGLE' },
+    props: [
+      { key: 'width', label: 'Width', type: 'float', min: 0, max: 1000, step: 0.01 },
+      { key: 'height', label: 'Height', type: 'float', min: 0, max: 1000, step: 0.01 },
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'RECTANGLE', label: 'Rectangle' },
+          { value: 'PARALLELOGRAM', label: 'Parallelogram' },
+          { value: 'TRAPEZOID', label: 'Trapezoid' },
+          { value: 'KITE', label: 'Kite' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const w = inputs['Width'] ?? values.width;
+      const h = inputs['Height'] ?? values.height;
+      const off = inputs['Offset'] ?? values.offset;
+      const hw = w / 2, hh = h / 2;
+
+      let positions;
+      switch (values.mode) {
+        case 'PARALLELOGRAM':
+          positions = [
+            { x: -hw, y: -hh, z: 0 }, { x: hw, y: -hh, z: 0 },
+            { x: hw + off, y: hh, z: 0 }, { x: -hw + off, y: hh, z: 0 },
+          ];
+          break;
+        case 'TRAPEZOID':
+          positions = [
+            { x: -hw, y: -hh, z: 0 }, { x: hw, y: -hh, z: 0 },
+            { x: hw * 0.5 + off, y: hh, z: 0 }, { x: -hw * 0.5 + off, y: hh, z: 0 },
+          ];
+          break;
+        case 'KITE':
+          positions = [
+            { x: 0, y: -hh, z: 0 }, { x: hw, y: 0, z: 0 },
+            { x: 0, y: hh, z: 0 }, { x: -hw, y: 0, z: 0 },
+          ];
+          break;
+        default: // RECTANGLE
+          positions = [
+            { x: -hw, y: -hh, z: 0 }, { x: hw, y: -hh, z: 0 },
+            { x: hw, y: hh, z: 0 }, { x: -hw, y: hh, z: 0 },
+          ];
+      }
+
+      const result = new GeometrySet();
+      const curve = new CurveComponent();
+      curve.splines.push({
+        type: 'POLY', positions,
+        handleLeft: null, handleRight: null,
+        radii: positions.map(() => 1), tilts: positions.map(() => 0),
+        cyclic: true, resolution: 12,
+      });
+      result.curve = curve;
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Curve Star ─────────────────────────────────────────────────────────
+  // Blender: node_geo_curve_primitive_star.cc
+  // "Generate a star pattern by connecting alternating points of two circles"
+  //
+  // Inputs: Points (int 8, min 3), Inner Radius (1.0), Outer Radius (2.0), Twist (0.0)
+  // Outputs: Curve, Outer Points (bool field)
+
+  registry.addNode('geo', 'curve_star', {
+    label: 'Star',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Points', type: SocketType.INT },
+      { name: 'Inner Radius', type: SocketType.FLOAT },
+      { name: 'Outer Radius', type: SocketType.FLOAT },
+      { name: 'Twist', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Outer Points', type: SocketType.BOOL },
+    ],
+    defaults: { points: 8, inner_radius: 1.0, outer_radius: 2.0, twist: 0.0 },
+    props: [
+      { key: 'points', label: 'Points', type: 'int', min: 3, max: 256, step: 1 },
+    ],
+    evaluate(values, inputs) {
+      const n = inputs['Points'] != null ? Math.max(3, Math.round(inputs['Points'])) : values.points;
+      const innerR = inputs['Inner Radius'] ?? values.inner_radius;
+      const outerR = inputs['Outer Radius'] ?? values.outer_radius;
+      const twist = inputs['Twist'] ?? values.twist;
+
+      const positions = [];
+      const totalPts = n * 2;
+      for (let i = 0; i < totalPts; i++) {
+        const isOuter = i % 2 === 0;
+        const r = isOuter ? outerR : innerR;
+        const angle = (i / totalPts) * Math.PI * 2 + (isOuter ? 0 : twist);
+        positions.push({
+          x: Math.cos(angle) * r,
+          y: Math.sin(angle) * r,
+          z: 0,
+        });
+      }
+
+      const result = new GeometrySet();
+      const curve = new CurveComponent();
+      curve.splines.push({
+        type: 'POLY', positions,
+        handleLeft: null, handleRight: null,
+        radii: positions.map(() => 1), tilts: positions.map(() => 0),
+        cyclic: true, resolution: 12,
+      });
+      result.curve = curve;
+
+      // Outer Points selection field
+      const outerField = new Field('bool', (el) => el.index % 2 === 0);
+
+      return { outputs: [result, outerField] };
+    },
+  });
+
+  // ── Handle Type Selection ──────────────────────────────────────────────
+  // Blender: node_geo_curve_handle_type_selection.cc
+  // "Provide a selection based on handle type"
+  // Output: Selection (bool field)
+  // Properties: handle_type (Auto/Free/Vector/Align), mode (Left/Right)
+
+  registry.addNode('geo', 'handle_type_selection', {
+    label: 'Handle Type Selection',
+    category: 'CURVE',
+    inputs: [],
+    outputs: [
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    defaults: { handle_type: 'AUTO', mode: 'LEFT_RIGHT' },
+    props: [
+      {
+        key: 'handle_type', label: 'Handle Type', type: 'select',
+        options: [
+          { value: 'AUTO', label: 'Auto' },
+          { value: 'FREE', label: 'Free' },
+          { value: 'VECTOR', label: 'Vector' },
+          { value: 'ALIGN', label: 'Align' },
+        ],
+      },
+    ],
+    evaluate() {
+      // Would check handle types in curve context
+      return { outputs: [new Field('bool', () => false)] };
+    },
+  });
+
+  // ── Set Handle Positions ───────────────────────────────────────────────
+  // Blender: node_geo_set_curve_handles.cc
+  // "Set Bezier handle positions"
+  //
+  // Inputs: Curve, Selection, Position (vector field), Offset (vector field)
+  // Output: Curve
+  // Property: Mode (Left, Right)
+
+  registry.addNode('geo', 'set_handle_positions', {
+    label: 'Set Handle Positions',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'Position', type: SocketType.VECTOR },
+      { name: 'Offset', type: SocketType.VECTOR },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: { mode: 'LEFT' },
+    props: [
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'LEFT', label: 'Left' },
+          { value: 'RIGHT', label: 'Right' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+      // Handle position modification requires Bezier curve context
+      return { outputs: [geo.copy()] };
+    },
+  });
+
+  // ── Curve of Point ─────────────────────────────────────────────────────
+  // Blender: node_geo_curve_topology_curve_of_point.cc
+  // "Retrieve the curve a control point is part of"
+  //
+  // Input: Point Index (int field)
+  // Outputs: Curve Index (int field), Index in Curve (int field)
+
+  registry.addNode('geo', 'curve_of_point', {
+    label: 'Curve of Point',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Point Index', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Curve Index', type: SocketType.INT },
+      { name: 'Index in Curve', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      // Would need curve context to determine which spline a point belongs to
+      return { outputs: [
+        new Field('int', (el) => el.splineIndex ?? 0),
+        new Field('int', (el) => el.localIndex ?? el.index),
+      ]};
+    },
+  });
+
+  // ── Offset Point in Curve ──────────────────────────────────────────────
+  // Blender: node_geo_offset_point_in_curve.cc
+  // "Offset a control point index within its curve"
+  //
+  // Inputs: Point Index (int field), Offset (int field)
+  // Outputs: Is Valid Offset (bool field), Point Index (int field)
+
+  registry.addNode('geo', 'offset_point_in_curve', {
+    label: 'Offset Point in Curve',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Point Index', type: SocketType.INT },
+      { name: 'Offset', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Is Valid Offset', type: SocketType.BOOL },
+      { name: 'Point Index', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const offsetInput = inputs['Offset'];
+      return { outputs: [
+        new Field('bool', (el) => {
+          const off = isField(offsetInput) ? offsetInput.evaluateAt(el) : (offsetInput ?? 0);
+          const newIdx = (el.localIndex ?? el.index) + off;
+          const count = el.localCount ?? el.count;
+          return newIdx >= 0 && newIdx < count;
+        }),
+        new Field('int', (el) => {
+          const off = isField(offsetInput) ? offsetInput.evaluateAt(el) : (offsetInput ?? 0);
+          return el.index + off;
+        }),
+      ]};
+    },
+  });
+
+  // ── Points to Curves ───────────────────────────────────────────────────
+  // Blender: node_geo_points_to_curves.cc
+  // "Split points into curves by group ID and order by weight"
+  //
+  // Inputs: Points (geometry), Curve Group ID (int field), Weight (float field)
+  // Output: Curves (geometry)
+
+  registry.addNode('geo', 'points_to_curves', {
+    label: 'Points to Curves',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Points', type: SocketType.GEOMETRY },
+      { name: 'Curve Group ID', type: SocketType.INT },
+      { name: 'Weight', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Curves', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Points'];
+      if (!geo || !geo.mesh || geo.mesh.vertexCount === 0) {
+        return { outputs: [new GeometrySet()] };
+      }
+
+      // Simple implementation: create one spline from all points
+      const result = new GeometrySet();
+      const curve = new CurveComponent();
+      const positions = geo.mesh.positions.map(p => ({ x: p.x, y: p.y, z: p.z }));
+
+      curve.splines.push({
+        type: 'POLY', positions,
+        handleLeft: null, handleRight: null,
+        radii: positions.map(() => 1), tilts: positions.map(() => 0),
+        cyclic: false, resolution: 12,
+      });
+      result.curve = curve;
+      return { outputs: [result] };
+    },
+  });
+
   // ── Curve Arc ────────────────────────────────────────────────────────────
   // Blender: node_geo_curve_primitive_arc.cc
   // "Generate a poly arc curve"

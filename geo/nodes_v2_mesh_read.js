@@ -313,4 +313,174 @@ export function registerMeshReadNodes(registry) {
       return { outputs: [new Field('float', () => 1.0)] };
     },
   });
+
+  // ── 11. Edge Vertices ──────────────────────────────────────────────────
+  // Blender: node_geo_input_mesh_edge_vertices.cc
+  // "Retrieve topology information relating to each edge"
+  // Outputs: Vertex Index 1, Vertex Index 2, Position 1, Position 2
+
+  registry.addNode('geo', 'edge_vertices', {
+    label: 'Edge Vertices',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Vertex Index 1', type: SocketType.INT },
+      { name: 'Vertex Index 2', type: SocketType.INT },
+      { name: 'Position 1', type: SocketType.VECTOR },
+      { name: 'Position 2', type: SocketType.VECTOR },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // These fields need edge context to return actual vertex data
+      return { outputs: [
+        new Field('int', () => 0),
+        new Field('int', () => 0),
+        new Field('vector', () => ({ x: 0, y: 0, z: 0 })),
+        new Field('vector', () => ({ x: 0, y: 0, z: 0 })),
+      ]};
+    },
+  });
+
+  // ── 12. Convex Hull ────────────────────────────────────────────────────
+  // Blender: node_geo_convex_hull.cc
+  // "Create a mesh that encloses all points with the smallest number of points"
+  //
+  // Input: Geometry
+  // Output: Convex Hull (geometry)
+  //
+  // NOTE: Full 3D convex hull (e.g. Quickhull) is complex in pure JS.
+  // We implement a simplified 2D convex hull (XY plane projection)
+  // for point clouds. 3D convex hull is a DOCUMENTED LIMITATION.
+
+  registry.addNode('geo', 'convex_hull', {
+    label: 'Convex Hull',
+    category: 'GEOMETRY',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    outputs: [
+      { name: 'Convex Hull', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+
+      // Gather all positions
+      const points = [];
+      if (geo.mesh && geo.mesh.vertexCount > 0) {
+        for (const p of geo.mesh.positions) {
+          points.push({ x: p.x, y: p.y, z: p.z });
+        }
+      }
+      if (geo.curve && geo.curve.splineCount > 0) {
+        for (const p of geo.curve.getAllPositions()) {
+          points.push({ x: p.x, y: p.y, z: p.z });
+        }
+      }
+
+      if (points.length < 3) {
+        const result = new GeometrySet();
+        if (points.length > 0) {
+          const mesh = new MeshComponent();
+          mesh.positions = points;
+          result.mesh = mesh;
+        }
+        return { outputs: [result] };
+      }
+
+      // 2D convex hull (XY projection) using Graham scan
+      const hull = convexHull2D(points);
+
+      const result = new GeometrySet();
+      const mesh = new MeshComponent();
+      mesh.positions = hull;
+      // Create edges around the hull
+      for (let i = 0; i < hull.length; i++) {
+        mesh.edges.push([i, (i + 1) % hull.length]);
+      }
+      // Create single face
+      mesh.faceVertCounts.push(hull.length);
+      for (let i = 0; i < hull.length; i++) {
+        mesh.cornerVerts.push(i);
+      }
+      result.mesh = mesh;
+      return { outputs: [result] };
+    },
+  });
+
+  // ── 13. Set ID ─────────────────────────────────────────────────────────
+  // Blender: node_geo_set_id.cc
+  // "Set the id attribute on geometry"
+  //
+  // Inputs: Geometry, Selection (bool field), ID (int field, default index)
+  // Output: Geometry
+
+  registry.addNode('geo', 'set_id', {
+    label: 'Set ID',
+    category: 'GEOMETRY',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+      { name: 'ID', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+      // ID attribute storage is a future enhancement
+      return { outputs: [geo.copy()] };
+    },
+  });
+}
+
+// ── Convex hull helper ──────────────────────────────────────────────────────
+
+function convexHull2D(points) {
+  // Graham scan on XY projection
+  const pts = points.map((p, i) => ({ x: p.x, y: p.y, z: p.z, idx: i }));
+
+  // Find lowest-leftmost point
+  let pivot = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].y < pts[pivot].y || (pts[i].y === pts[pivot].y && pts[i].x < pts[pivot].x)) {
+      pivot = i;
+    }
+  }
+  [pts[0], pts[pivot]] = [pts[pivot], pts[0]];
+
+  const p0 = pts[0];
+  pts.sort((a, b) => {
+    if (a === p0) return -1;
+    if (b === p0) return 1;
+    const angleA = Math.atan2(a.y - p0.y, a.x - p0.x);
+    const angleB = Math.atan2(b.y - p0.y, b.x - p0.x);
+    if (Math.abs(angleA - angleB) < 1e-10) {
+      const distA = (a.x - p0.x) ** 2 + (a.y - p0.y) ** 2;
+      const distB = (b.x - p0.x) ** 2 + (b.y - p0.y) ** 2;
+      return distA - distB;
+    }
+    return angleA - angleB;
+  });
+
+  const stack = [pts[0], pts[1]];
+  for (let i = 2; i < pts.length; i++) {
+    while (stack.length > 1) {
+      const a = stack[stack.length - 2];
+      const b = stack[stack.length - 1];
+      const c = pts[i];
+      const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      if (cross <= 0) stack.pop();
+      else break;
+    }
+    stack.push(pts[i]);
+  }
+
+  return stack.map(p => ({ x: p.x, y: p.y, z: p.z }));
 }
