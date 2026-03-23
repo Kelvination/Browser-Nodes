@@ -864,6 +864,190 @@ export function registerCurveNodes(registry) {
     },
   });
 
+  // ── Curve Arc ────────────────────────────────────────────────────────────
+  // Blender: node_geo_curve_primitive_arc.cc
+  // "Generate a poly arc curve"
+  //
+  // Inputs (RADIUS mode): Resolution, Radius, Start Angle, Sweep Angle,
+  //   Connect Center, Invert Arc
+  // Output: Curve
+
+  registry.addNode('geo', 'curve_arc', {
+    label: 'Arc',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Resolution', type: SocketType.INT },
+      { name: 'Radius', type: SocketType.FLOAT },
+      { name: 'Start Angle', type: SocketType.FLOAT },
+      { name: 'Sweep Angle', type: SocketType.FLOAT },
+      { name: 'Connect Center', type: SocketType.BOOL },
+      { name: 'Invert Arc', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: {
+      resolution: 16, radius: 1.0,
+      start_angle: 0, sweep_angle: 1.75 * Math.PI,
+    },
+    props: [
+      { key: 'resolution', label: 'Resolution', type: 'int', min: 2, max: 256, step: 1 },
+      { key: 'radius', label: 'Radius', type: 'float', min: 0, max: 1000, step: 0.01 },
+    ],
+    evaluate(values, inputs) {
+      const resolution = inputs['Resolution'] != null ? Math.max(2, Math.round(inputs['Resolution'])) : values.resolution;
+      const radius = inputs['Radius'] != null ? inputs['Radius'] : values.radius;
+      const startAngle = inputs['Start Angle'] != null ? inputs['Start Angle'] : values.start_angle;
+      const sweepAngle = inputs['Sweep Angle'] != null ? inputs['Sweep Angle'] : values.sweep_angle;
+      const connectCenter = inputs['Connect Center'] ?? false;
+      const invertArc = inputs['Invert Arc'] ?? false;
+
+      const sweep = invertArc ? -(2 * Math.PI - Math.abs(sweepAngle)) * Math.sign(sweepAngle || 1) : sweepAngle;
+
+      const positions = [];
+      const radii = [];
+      const tilts = [];
+
+      for (let i = 0; i < resolution; i++) {
+        const t = i / (resolution - 1);
+        const angle = startAngle + sweep * t;
+        positions.push({
+          x: Math.cos(angle) * radius,
+          y: Math.sin(angle) * radius,
+          z: 0,
+        });
+        radii.push(1);
+        tilts.push(0);
+      }
+
+      if (connectCenter) {
+        positions.push({ x: 0, y: 0, z: 0 });
+        radii.push(1);
+        tilts.push(0);
+      }
+
+      const result = new GeometrySet();
+      const curve = new CurveComponent();
+      curve.splines.push({
+        type: 'POLY',
+        positions, handleLeft: null, handleRight: null,
+        radii, tilts,
+        cyclic: connectCenter,
+        resolution: 12,
+      });
+      result.curve = curve;
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Curve Spiral ───────────────────────────────────────────────────────
+  // Blender: node_geo_curve_primitive_spiral.cc
+  // "Generate a poly spiral curve"
+  //
+  // Inputs: Resolution (32), Rotations (2.0), Start Radius (1.0),
+  //         End Radius (2.0), Height (2.0), Reverse (bool)
+  // Output: Curve
+
+  registry.addNode('geo', 'curve_spiral', {
+    label: 'Spiral',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Resolution', type: SocketType.INT },
+      { name: 'Rotations', type: SocketType.FLOAT },
+      { name: 'Start Radius', type: SocketType.FLOAT },
+      { name: 'End Radius', type: SocketType.FLOAT },
+      { name: 'Height', type: SocketType.FLOAT },
+      { name: 'Reverse', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: {
+      resolution: 32, rotations: 2.0,
+      start_radius: 1.0, end_radius: 2.0,
+      height: 2.0,
+    },
+    props: [
+      { key: 'resolution', label: 'Resolution', type: 'int', min: 1, max: 1024, step: 1 },
+      { key: 'rotations', label: 'Rotations', type: 'float', min: 0, max: 100, step: 0.1 },
+    ],
+    evaluate(values, inputs) {
+      const resolution = inputs['Resolution'] != null ? Math.max(1, Math.round(inputs['Resolution'])) : values.resolution;
+      const rotations = inputs['Rotations'] != null ? inputs['Rotations'] : values.rotations;
+      const startRadius = inputs['Start Radius'] != null ? inputs['Start Radius'] : values.start_radius;
+      const endRadius = inputs['End Radius'] != null ? inputs['End Radius'] : values.end_radius;
+      const height = inputs['Height'] != null ? inputs['Height'] : values.height;
+      const reverse = inputs['Reverse'] ?? false;
+
+      const totalPoints = Math.max(1, resolution);
+      const positions = [];
+      const radii = [];
+      const tilts = [];
+
+      for (let i = 0; i < totalPoints; i++) {
+        const t = i / Math.max(1, totalPoints - 1);
+        const angle = t * rotations * 2 * Math.PI * (reverse ? -1 : 1);
+        const r = startRadius + (endRadius - startRadius) * t;
+        positions.push({
+          x: Math.cos(angle) * r,
+          y: Math.sin(angle) * r,
+          z: t * height - height / 2,
+        });
+        radii.push(1);
+        tilts.push(0);
+      }
+
+      const result = new GeometrySet();
+      const curve = new CurveComponent();
+      curve.splines.push({
+        type: 'POLY',
+        positions, handleLeft: null, handleRight: null,
+        radii, tilts,
+        cyclic: false,
+        resolution: 12,
+      });
+      result.curve = curve;
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Set Curve Normal ───────────────────────────────────────────────────
+  // Blender: node_geo_set_curve_normal.cc
+  // "Set the normal evaluation mode for curves"
+  //
+  // Inputs: Curve, Selection (bool field)
+  // Output: Curve
+  // Property: Mode (Minimum Twist, Z-Up, Free)
+
+  registry.addNode('geo', 'set_curve_normal', {
+    label: 'Set Curve Normal',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: { mode: 'MINIMUM_TWIST' },
+    props: [
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'MINIMUM_TWIST', label: 'Minimum Twist' },
+          { value: 'Z_UP', label: 'Z Up' },
+          { value: 'FREE', label: 'Free' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+      // Normal mode affects rendering/evaluation but doesn't change geometry
+      return { outputs: [geo.copy()] };
+    },
+  });
+
   // ── Subdivide Curve ──────────────────────────────────────────────────────
   // Blender: node_geo_curve_subdivide.cc
   // "Dividing each curve segment into a specified number of pieces"

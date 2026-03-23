@@ -1179,6 +1179,325 @@ export function registerUtilityNodes(registry) {
       return { outputs: [{ r: fac, g: fac, b: fac, a: 1 }, fac] };
     },
   });
+
+  // ── 16. Checker Texture ────────────────────────────────────────────────
+  // Blender: node_shader_tex_checker.cc
+  // Alternating checkerboard pattern.
+  //
+  // Inputs: Vector, Color1, Color2, Scale (float 5.0)
+  // Outputs: Color, Fac
+
+  registry.addNode('geo', 'checker_texture', {
+    label: 'Checker Texture',
+    category: 'TEXTURE',
+    inputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+      { name: 'Color1', type: SocketType.COLOR },
+      { name: 'Color2', type: SocketType.COLOR },
+      { name: 'Scale', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Color', type: SocketType.COLOR },
+      { name: 'Fac', type: SocketType.FLOAT },
+    ],
+    defaults: { scale: 5.0 },
+    props: [
+      { key: 'scale', label: 'Scale', type: 'float', min: -10000, max: 10000, step: 0.1 },
+    ],
+    evaluate(values, inputs) {
+      const vecInput = inputs['Vector'];
+      const c1Input = inputs['Color1'] || { r: 0.8, g: 0.8, b: 0.8, a: 1 };
+      const c2Input = inputs['Color2'] || { r: 0.2, g: 0.2, b: 0.2, a: 1 };
+      const scaleInput = inputs['Scale'] ?? values.scale;
+      const hasField = isField(vecInput) || isField(scaleInput);
+
+      function checker(pos, scale) {
+        const s = typeof scale === 'number' ? scale : 5;
+        const px = pos?.x ?? 0, py = pos?.y ?? 0, pz = pos?.z ?? 0;
+        const ix = Math.floor(px * s);
+        const iy = Math.floor(py * s);
+        const iz = Math.floor(pz * s);
+        return ((ix + iy + iz) & 1) === 0 ? 1 : 0;
+      }
+
+      if (hasField) {
+        const facField = new Field('float', (el) => {
+          const pos = isField(vecInput) ? vecInput.evaluateAt(el) : (vecInput || el.position);
+          const s = isField(scaleInput) ? scaleInput.evaluateAt(el) : scaleInput;
+          return checker(pos, s);
+        });
+        const colField = new Field('color', (el) => {
+          const pos = isField(vecInput) ? vecInput.evaluateAt(el) : (vecInput || el.position);
+          const s = isField(scaleInput) ? scaleInput.evaluateAt(el) : scaleInput;
+          const f = checker(pos, s);
+          const ca = isField(c1Input) ? c1Input.evaluateAt(el) : c1Input;
+          const cb = isField(c2Input) ? c2Input.evaluateAt(el) : c2Input;
+          return f ? ca : cb;
+        });
+        return { outputs: [colField, facField] };
+      }
+
+      const fac = checker(vecInput, scaleInput);
+      return { outputs: [fac ? c1Input : c2Input, fac] };
+    },
+  });
+
+  // ── 17. Wave Texture ───────────────────────────────────────────────────
+  // Blender: node_shader_tex_wave.cc
+  // Wave pattern (bands or rings).
+  //
+  // Inputs: Vector, Scale, Distortion, Detail, Detail Scale, Detail Roughness, Phase Offset
+  // Outputs: Color, Fac
+  // Properties: wave_type (Bands/Rings), wave_profile (Sine/Saw/Triangle)
+
+  registry.addNode('geo', 'wave_texture', {
+    label: 'Wave Texture',
+    category: 'TEXTURE',
+    inputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+      { name: 'Scale', type: SocketType.FLOAT },
+      { name: 'Distortion', type: SocketType.FLOAT },
+      { name: 'Detail', type: SocketType.FLOAT },
+      { name: 'Detail Scale', type: SocketType.FLOAT },
+      { name: 'Detail Roughness', type: SocketType.FLOAT },
+      { name: 'Phase Offset', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Color', type: SocketType.COLOR },
+      { name: 'Fac', type: SocketType.FLOAT },
+    ],
+    defaults: {
+      scale: 5.0, distortion: 0.0, detail: 2.0, detail_scale: 1.0,
+      detail_roughness: 0.5, phase_offset: 0.0,
+      wave_type: 'BANDS', wave_profile: 'SIN',
+    },
+    props: [
+      { key: 'scale', label: 'Scale', type: 'float', min: -1000, max: 1000, step: 0.1 },
+      {
+        key: 'wave_type', label: 'Type', type: 'select',
+        options: [
+          { value: 'BANDS', label: 'Bands' },
+          { value: 'RINGS', label: 'Rings' },
+        ],
+      },
+      {
+        key: 'wave_profile', label: 'Profile', type: 'select',
+        options: [
+          { value: 'SIN', label: 'Sine' },
+          { value: 'SAW', label: 'Saw' },
+          { value: 'TRI', label: 'Triangle' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const vecInput = inputs['Vector'];
+      const scaleInput = inputs['Scale'] ?? values.scale;
+      const distInput = inputs['Distortion'] ?? values.distortion;
+      const phaseInput = inputs['Phase Offset'] ?? values.phase_offset;
+      const waveType = values.wave_type || 'BANDS';
+      const profile = values.wave_profile || 'SIN';
+      const hasField = isField(vecInput) || isField(scaleInput);
+
+      function computeWave(pos, scale, dist, phase) {
+        const s = typeof scale === 'number' ? scale : 5;
+        const d = typeof dist === 'number' ? dist : 0;
+        const ph = typeof phase === 'number' ? phase : 0;
+        const px = (pos?.x ?? 0) * s, py = (pos?.y ?? 0) * s, pz = (pos?.z ?? 0) * s;
+
+        let n;
+        if (waveType === 'BANDS') {
+          n = px;
+        } else {
+          n = Math.sqrt(px * px + py * py + pz * pz);
+        }
+
+        n += d * perlinNoise3D(px, py, pz) + ph;
+
+        let fac;
+        if (profile === 'SIN') {
+          fac = 0.5 + 0.5 * Math.sin(n * Math.PI * 2);
+        } else if (profile === 'SAW') {
+          fac = ((n % 1) + 1) % 1;
+        } else {
+          // Triangle
+          fac = Math.abs(((n % 1) + 1) % 1 * 2 - 1);
+        }
+        return Math.max(0, Math.min(1, fac));
+      }
+
+      if (hasField) {
+        const facField = new Field('float', (el) => {
+          const pos = isField(vecInput) ? vecInput.evaluateAt(el) : (vecInput || el.position);
+          const s = isField(scaleInput) ? scaleInput.evaluateAt(el) : scaleInput;
+          return computeWave(pos, s, distInput, phaseInput);
+        });
+        const colField = new Field('color', (el) => {
+          const f = facField.evaluateAt(el);
+          return { r: f, g: f, b: f, a: 1 };
+        });
+        return { outputs: [colField, facField] };
+      }
+
+      const fac = computeWave(vecInput, scaleInput, distInput, phaseInput);
+      return { outputs: [{ r: fac, g: fac, b: fac, a: 1 }, fac] };
+    },
+  });
+
+  // ── 18. Evaluate on Domain ─────────────────────────────────────────────
+  // Blender: node_geo_evaluate_on_domain.cc
+  // "Retrieve values from a field on a different domain"
+  //
+  // Input: Value (dynamic field)
+  // Output: Value (dynamic field)
+  // Properties: domain, data_type
+
+  registry.addNode('geo', 'evaluate_on_domain', {
+    label: 'Evaluate on Domain',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT', domain: 'POINT' },
+    getInputs(values) {
+      const type = evalAtIndexTypeToSocket(values.data_type || 'FLOAT');
+      return [{ name: 'Value', type }];
+    },
+    getOutputs(values) {
+      const type = evalAtIndexTypeToSocket(values.data_type || 'FLOAT');
+      return [{ name: 'Value', type }];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+            { value: 'BOOLEAN', label: 'Boolean' },
+            { value: 'FLOAT_COLOR', label: 'Color' },
+          ],
+        },
+        {
+          key: 'domain', label: 'Domain', type: 'select',
+          options: [
+            { value: 'POINT', label: 'Point' },
+            { value: 'EDGE', label: 'Edge' },
+            { value: 'FACE', label: 'Face' },
+            { value: 'CORNER', label: 'Face Corner' },
+            { value: 'SPLINE', label: 'Spline' },
+          ],
+        },
+      ];
+    },
+    evaluate(values, inputs) {
+      // In a full implementation, this would change the evaluation domain
+      // For now, pass through the field
+      return { outputs: [inputs['Value'] ?? 0] };
+    },
+  });
+
+  // ── 19. Index of Nearest ───────────────────────────────────────────────
+  // Blender: node_geo_index_of_nearest.cc
+  // "Find the nearest element in a group"
+  //
+  // Inputs: Position (vector field), Group ID (int field)
+  // Outputs: Index (int field), Has Neighbor (bool field)
+
+  registry.addNode('geo', 'index_of_nearest', {
+    label: 'Index of Nearest',
+    category: 'UTILITIES',
+    inputs: [
+      { name: 'Position', type: SocketType.VECTOR },
+      { name: 'Group ID', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Index', type: SocketType.INT },
+      { name: 'Has Neighbor', type: SocketType.BOOL },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      // Returns field outputs - would need full element context for real implementation
+      const indexField = new Field('int', (el) => {
+        // Find nearest different-index element (simplified: return index-1 or index+1)
+        return el.index > 0 ? el.index - 1 : (el.count > 1 ? 1 : 0);
+      });
+      const hasNeighborField = new Field('bool', (el) => el.count > 1);
+      return { outputs: [indexField, hasNeighborField] };
+    },
+  });
+
+  // ── 20. Remove Named Attribute ─────────────────────────────────────────
+  // Blender: node_geo_remove_attribute.cc
+  // "Remove the attribute with the given name"
+  //
+  // Inputs: Geometry, Name (string)
+  // Output: Geometry
+
+  registry.addNode('geo', 'remove_named_attribute', {
+    label: 'Remove Named Attribute',
+    category: 'ATTRIBUTE',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    outputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    defaults: { name: '' },
+    props: [
+      { key: 'name', label: 'Name', type: 'text' },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+      // Pass through - attribute removal is a future enhancement
+      return { outputs: [geo.copy()] };
+    },
+  });
+
+  // ── 21. Blur Attribute ─────────────────────────────────────────────────
+  // Blender: node_geo_blur_attribute.cc
+  // "Smooth an attribute value between neighboring mesh elements"
+  //
+  // Inputs: Value (dynamic field), Iterations (int, 1), Weight (float field, 1.0)
+  // Output: Value (dynamic field)
+  // Property: data_type
+
+  registry.addNode('geo', 'blur_attribute', {
+    label: 'Blur Attribute',
+    category: 'ATTRIBUTE',
+    defaults: { data_type: 'FLOAT', iterations: 1 },
+    getInputs(values) {
+      const type = evalAtIndexTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Value', type },
+        { name: 'Iterations', type: SocketType.INT },
+        { name: 'Weight', type: SocketType.FLOAT },
+      ];
+    },
+    getOutputs(values) {
+      const type = evalAtIndexTypeToSocket(values.data_type || 'FLOAT');
+      return [{ name: 'Value', type }];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+            { value: 'FLOAT_COLOR', label: 'Color' },
+          ],
+        },
+        { key: 'iterations', label: 'Iterations', type: 'int', min: 0, max: 100, step: 1 },
+      ];
+    },
+    evaluate(values, inputs) {
+      // Blur requires mesh topology context for neighbor averaging
+      // Pass through the input field for now
+      // DOCUMENTED LIMITATION: Blur requires mesh adjacency data for actual smoothing
+      return { outputs: [inputs['Value'] ?? 0] };
+    },
+  });
 }
 
 // ── Helper functions ─────────────────────────────────────────────────────────

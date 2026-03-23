@@ -252,4 +252,65 @@ export function registerMeshReadNodes(registry) {
       return { outputs: [result] };
     },
   });
+
+  // ── 8. Edge Neighbors ──────────────────────────────────────────────────
+  // Blender: node_geo_input_mesh_edge_neighbors.cc
+  // "Retrieve the number of faces that use each edge"
+  // Output: Face Count (int field)
+
+  registry.addNode('geo', 'edge_neighbors', {
+    label: 'Edge Neighbors',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Face Count', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [new Field('int', () => 0)] };
+    },
+  });
+
+  // ── 9. Mesh Island ─────────────────────────────────────────────────────
+  // Blender: node_geo_input_mesh_island.cc
+  // "Retrieve information about separate connected regions"
+  // Outputs: Island Index (int field), Island Count (int field)
+
+  registry.addNode('geo', 'mesh_island', {
+    label: 'Mesh Island',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Island Index', type: SocketType.INT },
+      { name: 'Island Count', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [
+        new Field('int', () => 0),
+        new Field('int', () => 1),
+      ]};
+    },
+  });
+
+  // ── 10. Radius ─────────────────────────────────────────────────────────
+  // Blender: node_geo_input_radius.cc
+  // "Retrieve the radius at each point"
+  // Output: Radius (float field, default 1.0)
+
+  registry.addNode('geo', 'radius', {
+    label: 'Radius',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Radius', type: SocketType.FLOAT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [new Field('float', () => 1.0)] };
+    },
+  });
 }

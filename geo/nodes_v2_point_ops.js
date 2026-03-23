@@ -20,7 +20,7 @@ import {
   DOMAIN,
   ATTR_TYPE,
 } from '../core/geometry.js';
-import { Field, isField, resolveField, resolveScalar } from '../core/field.js';
+import { Field, isField, resolveField, resolveScalar, resolveSelection } from '../core/field.js';
 import {
   seededRandom,
   vecSub,
@@ -555,6 +555,51 @@ export function registerPointOpNodes(registry) {
 
       const result = new GeometrySet();
       result.mesh = mesh;
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Points to Vertices ──────────────────────────────────────────────────
+  // Blender: node_geo_points_to_vertices.cc
+  // "Generate a mesh vertex for each point cloud point"
+  //
+  // Inputs: Points (geometry, pointcloud), Selection (bool field)
+  // Output: Mesh (geometry)
+  //
+  // In our system, point clouds are stored as MeshComponent with positions only.
+
+  registry.addNode('geo', 'points_to_vertices', {
+    label: 'Points to Vertices',
+    category: 'POINT',
+    inputs: [
+      { name: 'Points', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Points'];
+      if (!geo || !geo.mesh || geo.mesh.vertexCount === 0) {
+        return { outputs: [new GeometrySet()] };
+      }
+
+      const elements = geo.mesh.buildElements(DOMAIN.POINT);
+      const selection = resolveSelection(inputs['Selection'], elements);
+
+      const result = new GeometrySet();
+      const mesh = new MeshComponent();
+
+      for (let i = 0; i < geo.mesh.vertexCount; i++) {
+        if (selection && !selection[i]) continue;
+        mesh.positions.push({ ...geo.mesh.positions[i] });
+      }
+
+      if (mesh.positions.length > 0) {
+        result.mesh = mesh;
+      }
       return { outputs: [result] };
     },
   });
