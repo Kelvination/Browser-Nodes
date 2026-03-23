@@ -753,6 +753,77 @@ export function registerMeshReadNodes(registry) {
       ]};
     },
   });
+
+  // ── 23. Vertex of Corner ───────────────────────────────────────────────
+  // Blender: node_geo_mesh_topology_vertex_of_corner.cc
+  // "Retrieve the vertex each face corner is attached to"
+  // Input: Corner Index (int field)
+  // Output: Vertex Index (int field)
+
+  registry.addNode('geo', 'vertex_of_corner', {
+    label: 'Vertex of Corner',
+    category: 'INPUT',
+    inputs: [{ name: 'Corner Index', type: SocketType.INT }],
+    outputs: [{ name: 'Vertex Index', type: SocketType.INT }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [new Field('int', (el) => el.index)] };
+    },
+  });
+
+  // ── 24. Corners of Edge ────────────────────────────────────────────────
+  // Blender: node_geo_mesh_topology_corners_of_edge.cc
+  // "Retrieve face corners connected to an edge"
+  // Inputs: Edge Index, Weights, Sort Index
+  // Outputs: Corner Index, Total
+
+  registry.addNode('geo', 'corners_of_edge', {
+    label: 'Corners of Edge',
+    category: 'INPUT',
+    inputs: [
+      { name: 'Edge Index', type: SocketType.INT },
+      { name: 'Weights', type: SocketType.FLOAT },
+      { name: 'Sort Index', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Corner Index', type: SocketType.INT },
+      { name: 'Total', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [
+        new Field('int', (el) => el.index),
+        new Field('int', () => 0),
+      ]};
+    },
+  });
+
+  // ── 25. Offset Corner in Face ──────────────────────────────────────────
+  // Blender: node_geo_mesh_topology_offset_corner_in_face.cc
+  // "Offset a corner index within its face"
+  // Inputs: Corner Index, Offset (int)
+  // Output: Corner Index (int field)
+
+  registry.addNode('geo', 'offset_corner_in_face', {
+    label: 'Offset Corner in Face',
+    category: 'INPUT',
+    inputs: [
+      { name: 'Corner Index', type: SocketType.INT },
+      { name: 'Offset', type: SocketType.INT },
+    ],
+    outputs: [{ name: 'Corner Index', type: SocketType.INT }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const offsetInput = inputs['Offset'];
+      return { outputs: [new Field('int', (el) => {
+        const off = isField(offsetInput) ? offsetInput.evaluateAt(el) : (offsetInput ?? 0);
+        return el.index + off;
+      })] };
+    },
+  });
 }
 
 // ── Convex hull helper ──────────────────────────────────────────────────────

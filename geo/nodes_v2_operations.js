@@ -790,6 +790,84 @@ export function registerOperationNodes(registry) {
       return { outputs: [result] };
     },
   });
+
+  // ── 10. Geometry to Instance ────────────────────────────────────────────
+  // Blender: node_geo_geometry_to_instance.cc
+  // "Convert each input geometry into an instance"
+  //
+  // Input: Geometry (multi-input)
+  // Output: Instances
+
+  registry.addNode('geo', 'geometry_to_instance', {
+    label: 'Geometry to Instance',
+    category: 'INSTANCE',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    outputs: [
+      { name: 'Instances', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+
+      const result = new GeometrySet();
+      result.instances = new InstancesComponent();
+      result.instances.addInstance(
+        { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 1 }, geo
+      );
+      return { outputs: [result] };
+    },
+  });
+
+  // ── 11. Separate Components ─────────────────────────────────────────────
+  // Blender: node_geo_separate_components.cc
+  // "Split a geometry into separate outputs for each type"
+  //
+  // Input: Geometry
+  // Outputs: Mesh, Curve, Point Cloud, Instances
+
+  registry.addNode('geo', 'separate_components', {
+    label: 'Separate Components',
+    category: 'GEOMETRY',
+    inputs: [
+      { name: 'Geometry', type: SocketType.GEOMETRY },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Point Cloud', type: SocketType.GEOMETRY },
+      { name: 'Instances', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) {
+        return { outputs: [new GeometrySet(), new GeometrySet(), new GeometrySet(), new GeometrySet()] };
+      }
+
+      const meshGeo = new GeometrySet();
+      const curveGeo = new GeometrySet();
+      const pointGeo = new GeometrySet();
+      const instGeo = new GeometrySet();
+
+      if (geo.mesh && geo.mesh.vertexCount > 0) {
+        meshGeo.mesh = geo.mesh.copy();
+      }
+      if (geo.curve && geo.curve.splineCount > 0) {
+        curveGeo.curve = geo.curve.copy();
+      }
+      // Point cloud: mesh with only positions (no faces/edges)
+      if (geo.instances && geo.instances.instanceCount > 0) {
+        instGeo.instances = geo.instances.copy();
+      }
+
+      return { outputs: [meshGeo, curveGeo, pointGeo, instGeo] };
+    },
+  });
 }
 
 // ── Helper: rotate a point by euler angles (XYZ order) ─────────────────────

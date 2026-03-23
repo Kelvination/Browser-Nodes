@@ -1362,6 +1362,99 @@ export function registerFieldNodes(registry) {
       return { outputs: [result ?? 0] };
     },
   });
+
+  // ── Rotation to Euler ──────────────────────────────────────────────────
+  // Blender: node_fn_rotation_to_euler.cc
+  // "Convert a rotation to euler angles"
+  // Input: Rotation, Output: Euler (vector)
+
+  registry.addNode('geo', 'rotation_to_euler', {
+    label: 'Rotation to Euler',
+    category: 'VECTOR',
+    inputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    outputs: [{ name: 'Euler', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const rot = inputs['Rotation'];
+      if (isField(rot)) return { outputs: [rot] };
+      return { outputs: [rot || { x: 0, y: 0, z: 0 }] };
+    },
+  });
+
+  // ── Rotation to Axis Angle ─────────────────────────────────────────────
+  // Blender: node_fn_rotation_to_axis_angle.cc
+  // "Convert a rotation to axis angle components"
+  // Input: Rotation, Outputs: Axis (vector), Angle (float)
+
+  registry.addNode('geo', 'rotation_to_axis_angle', {
+    label: 'Rotation to Axis Angle',
+    category: 'VECTOR',
+    inputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    outputs: [
+      { name: 'Axis', type: SocketType.VECTOR },
+      { name: 'Angle', type: SocketType.FLOAT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const rot = inputs['Rotation'];
+
+      function toAxisAngle(r) {
+        const v = r || { x: 0, y: 0, z: 0 };
+        const angle = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (angle < 1e-10) return { axis: { x: 0, y: 0, z: 1 }, angle: 0 };
+        return {
+          axis: { x: v.x / angle, y: v.y / angle, z: v.z / angle },
+          angle,
+        };
+      }
+
+      if (isField(rot)) {
+        return { outputs: [
+          new Field('vector', (el) => toAxisAngle(rot.evaluateAt(el)).axis),
+          new Field('float', (el) => toAxisAngle(rot.evaluateAt(el)).angle),
+        ]};
+      }
+
+      const result = toAxisAngle(rot);
+      return { outputs: [result.axis, result.angle] };
+    },
+  });
+
+  // ── Curve Tilt (input) ─────────────────────────────────────────────────
+  // Blender: node_geo_input_curve_tilt.cc
+  // "Retrieve the tilt angle at each control point"
+  // Output: Tilt (float field)
+
+  registry.addNode('geo', 'curve_tilt', {
+    label: 'Curve Tilt',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [{ name: 'Tilt', type: SocketType.FLOAT }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [new Field('float', () => 0)] };
+    },
+  });
+
+  // ── Is Viewport ────────────────────────────────────────────────────────
+  // Blender: node_geo_is_viewport.cc
+  // "Retrieve whether evaluation is for viewport vs final render"
+  // In browser context, always true (we're always in "viewport").
+
+  registry.addNode('geo', 'is_viewport', {
+    label: 'Is Viewport',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [{ name: 'Is Viewport', type: SocketType.BOOL }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [true] };
+    },
+  });
 }
 
 function switchDataTypeToSocket(type) {
