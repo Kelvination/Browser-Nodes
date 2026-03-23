@@ -864,6 +864,112 @@ export function registerCurveNodes(registry) {
     },
   });
 
+  // ── Set Spline Type ─────────────────────────────────────────────────────
+  // Blender: node_geo_curve_spline_type.cc
+  // "Change the type of curves"
+  // Inputs: Curve, Selection (bool field)
+  // Property: spline_type (Catmull-Rom, Poly, Bezier, NURBS)
+
+  registry.addNode('geo', 'set_spline_type', {
+    label: 'Set Spline Type',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Curve', type: SocketType.GEOMETRY },
+    ],
+    defaults: { spline_type: 'POLY' },
+    props: [
+      {
+        key: 'spline_type', label: 'Type', type: 'select',
+        options: [
+          { value: 'CATMULL_ROM', label: 'Catmull Rom' },
+          { value: 'POLY', label: 'Poly' },
+          { value: 'BEZIER', label: 'Bezier' },
+          { value: 'NURBS', label: 'NURBS' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const geo = inputs['Curve'];
+      if (!geo || !geo.curve) return { outputs: [geo ? geo.copy() : new GeometrySet()] };
+      const result = geo.copy();
+      const elements = result.curve.buildElements('SPLINE');
+      const selection = inputs['Selection'];
+
+      for (let si = 0; si < result.curve.splines.length; si++) {
+        if (selection != null) {
+          const sel = isField(selection) ? selection.evaluateAt(elements[si] || { index: si, count: result.curve.splines.length }) : selection;
+          if (!sel) continue;
+        }
+        result.curve.splines[si].type = values.spline_type || 'POLY';
+        // Clear handles when converting away from BEZIER
+        if (values.spline_type !== 'BEZIER') {
+          result.curve.splines[si].handleLeft = null;
+          result.curve.splines[si].handleRight = null;
+        }
+      }
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Curve Handle Positions (read) ──────────────────────────────────────
+  // Blender: node_geo_input_curve_handles.cc
+  // "Retrieve the position of each Bezier control point's handles"
+  // Input: Relative (bool, default false)
+  // Outputs: Left (vector field), Right (vector field)
+
+  registry.addNode('geo', 'curve_handle_positions', {
+    label: 'Curve Handle Positions',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Relative', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Left', type: SocketType.VECTOR },
+      { name: 'Right', type: SocketType.VECTOR },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // Would need Bezier curve context for actual handle positions
+      return { outputs: [
+        new Field('vector', () => ({ x: 0, y: 0, z: 0 })),
+        new Field('vector', () => ({ x: 0, y: 0, z: 0 })),
+      ]};
+    },
+  });
+
+  // ── Points of Curve ────────────────────────────────────────────────────
+  // Blender: node_geo_curve_topology_points_of_curve.cc
+  // "Retrieve a point index within a curve"
+  // Inputs: Curve Index (int field), Weights (float field), Sort Index (int field)
+  // Outputs: Point Index (int field), Total (int field)
+
+  registry.addNode('geo', 'points_of_curve', {
+    label: 'Points of Curve',
+    category: 'CURVE',
+    inputs: [
+      { name: 'Curve Index', type: SocketType.INT },
+      { name: 'Weights', type: SocketType.FLOAT },
+      { name: 'Sort Index', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Point Index', type: SocketType.INT },
+      { name: 'Total', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      return { outputs: [
+        new Field('int', (el) => el.index),
+        new Field('int', (el) => el.localCount ?? el.count ?? 0),
+      ]};
+    },
+  });
+
   // ── Curve Quadrilateral ──────────────────────────────────────────────────
   // Blender: node_geo_curve_primitive_quadrilateral.cc
   // "Generate a polygon with four points"
