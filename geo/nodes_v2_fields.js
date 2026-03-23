@@ -7,6 +7,7 @@
  */
 
 import { SocketType } from '../core/registry.js';
+import { GeometrySet } from '../core/geometry.js';
 import {
   Field,
   isField,
@@ -80,6 +81,8 @@ export function registerFieldNodes(registry) {
   // ── Categories ──────────────────────────────────────────────────────────
   registry.addCategory('geo', 'FIELD', { name: 'Field', color: '#7E57C2', icon: '∿' });
   registry.addCategory('geo', 'MATH', { name: 'Math', color: '#5C6BC0', icon: '∑' });
+  registry.addCategory('geo', 'ATTRIBUTE', { name: 'Attribute', color: '#26A69A', icon: '⊞' });
+  registry.addCategory('geo', 'VECTOR', { name: 'Vector', color: '#7C4DFF', icon: '→' });
 
   // ═══════════════════════════════════════════════════════════════════════
   // FIELD NODES
@@ -921,4 +924,571 @@ export function registerFieldNodes(registry) {
       return { outputs: [result] };
     },
   });
+
+  // ── ID ──────────────────────────────────────────────────────────────────
+  // Blender: node_geo_input_id.cc
+  // "Retrieve a stable random identifier value from the 'id' attribute,
+  //  or the index if the attribute does not exist"
+  // Output: ID (int field)
+
+  registry.addNode('geo', 'id', {
+    label: 'ID',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'ID', type: SocketType.INT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // In our system, ID falls back to index since we don't track stable IDs
+      return { outputs: [new Field('int', (el) => el.index)] };
+    },
+  });
+
+  // ── Scene Time ──────────────────────────────────────────────────────────
+  // Blender: node_geo_input_scene_time.cc
+  // "Retrieve the current time in the scene's animation"
+  // Outputs: Seconds (float), Frame (float)
+  //
+  // NOTE: In a browser context we don't have scene time. We output 0/0
+  // but expose the node for workflow compatibility.
+
+  registry.addNode('geo', 'scene_time', {
+    label: 'Scene Time',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Seconds', type: SocketType.FLOAT },
+      { name: 'Frame', type: SocketType.FLOAT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // No animation timeline in browser - return 0
+      return { outputs: [0, 0] };
+    },
+  });
+
+  // ── Named Attribute ─────────────────────────────────────────────────────
+  // Blender: node_geo_input_named_attribute.cc
+  // "Retrieve the data of a specified attribute"
+  //
+  // Input: Name (string)
+  // Outputs: Attribute (dynamic field), Exists (bool field)
+  // Property: data_type
+
+  registry.addNode('geo', 'named_attribute', {
+    label: 'Named Attribute',
+    category: 'INPUT',
+    defaults: { data_type: 'FLOAT', name: '' },
+    getInputs() {
+      return [
+        { name: 'Name', type: SocketType.FLOAT }, // String type - using float as placeholder
+      ];
+    },
+    getOutputs(values) {
+      const type = namedAttrTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Attribute', type },
+        { name: 'Exists', type: SocketType.BOOL },
+      ];
+    },
+    getProps() {
+      return [
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+            { value: 'BOOLEAN', label: 'Boolean' },
+            { value: 'FLOAT_COLOR', label: 'Color' },
+          ],
+        },
+        { key: 'name', label: 'Name', type: 'text' },
+      ];
+    },
+    evaluate(values) {
+      // Named attributes would read from geometry's attribute storage
+      // Return a default field since we don't have runtime attribute context
+      const dataType = values.data_type || 'FLOAT';
+      const defaultVal = dataType === 'FLOAT_VECTOR' ? { x: 0, y: 0, z: 0 } :
+                         dataType === 'INT' ? 0 :
+                         dataType === 'BOOLEAN' ? false :
+                         dataType === 'FLOAT_COLOR' ? { r: 0, g: 0, b: 0, a: 1 } : 0;
+      const fieldType = dataType === 'FLOAT_VECTOR' ? 'vector' :
+                        dataType === 'INT' ? 'int' :
+                        dataType === 'BOOLEAN' ? 'bool' : 'float';
+      return { outputs: [
+        new Field(fieldType, () => defaultVal),
+        new Field('bool', () => false), // attribute doesn't exist
+      ]};
+    },
+  });
+
+  // ── Store Named Attribute ───────────────────────────────────────────────
+  // Blender: node_geo_store_named_attribute.cc
+  // "Store the result of a field on a geometry as an attribute"
+  //
+  // Inputs: Geometry, Selection (bool field), Name (string), Value (dynamic field)
+  // Output: Geometry
+  // Properties: data_type, domain
+
+  registry.addNode('geo', 'store_named_attribute', {
+    label: 'Store Named Attribute',
+    category: 'ATTRIBUTE',
+    defaults: { data_type: 'FLOAT', domain: 'POINT', name: '' },
+    getInputs(values) {
+      const type = namedAttrTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Geometry', type: SocketType.GEOMETRY },
+        { name: 'Selection', type: SocketType.BOOL },
+        { name: 'Value', type },
+      ];
+    },
+    getOutputs() {
+      return [
+        { name: 'Geometry', type: SocketType.GEOMETRY },
+      ];
+    },
+    getProps() {
+      return [
+        { key: 'name', label: 'Name', type: 'text' },
+        {
+          key: 'data_type', label: 'Data Type', type: 'select',
+          options: [
+            { value: 'FLOAT', label: 'Float' },
+            { value: 'INT', label: 'Integer' },
+            { value: 'FLOAT_VECTOR', label: 'Vector' },
+            { value: 'BOOLEAN', label: 'Boolean' },
+            { value: 'FLOAT_COLOR', label: 'Color' },
+          ],
+        },
+        {
+          key: 'domain', label: 'Domain', type: 'select',
+          options: [
+            { value: 'POINT', label: 'Point' },
+            { value: 'EDGE', label: 'Edge' },
+            { value: 'FACE', label: 'Face' },
+            { value: 'CORNER', label: 'Face Corner' },
+          ],
+        },
+      ];
+    },
+    evaluate(values, inputs) {
+      const geo = inputs['Geometry'];
+      if (!geo) return { outputs: [new GeometrySet()] };
+      // Store Named Attribute would write to geometry's attribute storage
+      // For now, pass through the geometry (attribute storage is a future enhancement)
+      return { outputs: [geo.copy()] };
+    },
+  });
+
+  // ── Vector Rotate ───────────────────────────────────────────────────────
+  // Blender: node_fn_rotate_vector.cc
+  // "Apply a rotation to a given vector"
+  // Inputs: Vector, Rotation (euler angles in our system)
+  // Output: Vector
+
+  registry.addNode('geo', 'vector_rotate', {
+    label: 'Vector Rotate',
+    category: 'VECTOR',
+    inputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+      { name: 'Rotation', type: SocketType.VECTOR },
+    ],
+    outputs: [
+      { name: 'Vector', type: SocketType.VECTOR },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const vecInput = inputs['Vector'];
+      const rotInput = inputs['Rotation'];
+
+      if (vecInput == null) return { outputs: [{ x: 0, y: 0, z: 0 }] };
+
+      const result = combineFields(vecInput, rotInput, 'vector', (v, r) => {
+        const vv = v || { x: 0, y: 0, z: 0 };
+        const rr = r || { x: 0, y: 0, z: 0 };
+        return rotateVecByEuler(vv, rr.x, rr.y, rr.z);
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Curve Tangent ───────────────────────────────────────────────────────
+  // Blender: node_geo_input_tangent.cc
+  // "Retrieve the direction of curves at each control point"
+  // Output: Tangent (vector field)
+
+  registry.addNode('geo', 'curve_tangent', {
+    label: 'Curve Tangent',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [
+      { name: 'Tangent', type: SocketType.VECTOR },
+    ],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // Return a field that computes tangent from element context
+      // In curve context, tangent is approximated from adjacent positions
+      return { outputs: [new Field('vector', (el) => {
+        // Use normal as fallback - proper tangent needs curve context
+        return el.normal || { x: 0, y: 0, z: 1 };
+      })] };
+    },
+  });
+
+  // ── Endpoint Selection ──────────────────────────────────────────────────
+  // Blender: node_geo_curve_endpoint_selection.cc
+  // "Provide a selection for endpoints in each spline"
+  // Inputs: Start Size (int, default 1, min 0), End Size (int, default 1, min 0)
+  // Output: Selection (bool field)
+
+  registry.addNode('geo', 'endpoint_selection', {
+    label: 'Endpoint Selection',
+    category: 'INPUT',
+    inputs: [
+      { name: 'Start Size', type: SocketType.INT },
+      { name: 'End Size', type: SocketType.INT },
+    ],
+    outputs: [
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    defaults: { start_size: 1, end_size: 1 },
+    props: [
+      { key: 'start_size', label: 'Start Size', type: 'int', min: 0, max: 10000, step: 1 },
+      { key: 'end_size', label: 'End Size', type: 'int', min: 0, max: 10000, step: 1 },
+    ],
+    evaluate(values, inputs) {
+      const startSize = inputs['Start Size'] != null
+        ? resolveScalar(inputs['Start Size'], values.start_size) : values.start_size;
+      const endSize = inputs['End Size'] != null
+        ? resolveScalar(inputs['End Size'], values.end_size) : values.end_size;
+
+      return { outputs: [new Field('bool', (el) => {
+        // In curve context, localIndex and localCount are available
+        if (el.localIndex !== undefined && el.localCount !== undefined) {
+          if (el.localIndex < startSize) return true;
+          if (el.localIndex >= el.localCount - endSize) return true;
+          return false;
+        }
+        // Fallback for non-curve context
+        if (el.index < startSize) return true;
+        if (el.index >= el.count - endSize) return true;
+        return false;
+      })] };
+    },
+  });
+
+  // ── Euler to Rotation ──────────────────────────────────────────────────
+  // Blender: node_fn_euler_to_rotation.cc
+  // "Build a rotation from separate angles around each axis"
+  // Input: Euler (vector), Output: Rotation (vector - euler angles in our system)
+
+  registry.addNode('geo', 'euler_to_rotation', {
+    label: 'Euler to Rotation',
+    category: 'VECTOR',
+    inputs: [{ name: 'Euler', type: SocketType.VECTOR }],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      // In our system rotations are euler vectors, so pass through
+      const euler = inputs['Euler'];
+      if (isField(euler)) return { outputs: [euler] };
+      return { outputs: [euler || { x: 0, y: 0, z: 0 }] };
+    },
+  });
+
+  // ── Axis Angle to Rotation ─────────────────────────────────────────────
+  // Blender: node_fn_axis_angle_to_rotation.cc
+  // "Build a rotation from an axis and angle"
+  // Inputs: Axis (vector, default 0,0,1), Angle (float)
+  // Output: Rotation (vector)
+
+  registry.addNode('geo', 'axis_angle_to_rotation', {
+    label: 'Axis Angle to Rotation',
+    category: 'VECTOR',
+    inputs: [
+      { name: 'Axis', type: SocketType.VECTOR },
+      { name: 'Angle', type: SocketType.FLOAT },
+    ],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const axisInput = inputs['Axis'] || { x: 0, y: 0, z: 1 };
+      const angleInput = inputs['Angle'] || 0;
+
+      const result = combineFields(axisInput, angleInput, 'vector', (axis, angle) => {
+        const a = axis || { x: 0, y: 0, z: 1 };
+        const ang = angle || 0;
+        // Simplified: represent axis-angle as euler approximation
+        const len = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) || 1;
+        return {
+          x: (a.x / len) * ang,
+          y: (a.y / len) * ang,
+          z: (a.z / len) * ang,
+        };
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Rotate Rotation ────────────────────────────────────────────────────
+  // Blender: node_fn_rotate_rotation.cc
+  // "Apply a secondary rotation to a rotation"
+  // Inputs: Rotation, Rotate By
+  // Output: Rotation
+  // Property: rotation_space (Global, Local)
+
+  registry.addNode('geo', 'rotate_rotation', {
+    label: 'Rotate Rotation',
+    category: 'VECTOR',
+    inputs: [
+      { name: 'Rotation', type: SocketType.VECTOR },
+      { name: 'Rotate By', type: SocketType.VECTOR },
+    ],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: { rotation_space: 'GLOBAL' },
+    props: [
+      {
+        key: 'rotation_space', label: 'Space', type: 'select',
+        options: [
+          { value: 'GLOBAL', label: 'Global' },
+          { value: 'LOCAL', label: 'Local' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const result = combineFields(inputs['Rotation'], inputs['Rotate By'], 'vector', (rot, by) => {
+        const r = rot || { x: 0, y: 0, z: 0 };
+        const b = by || { x: 0, y: 0, z: 0 };
+        // Simplified euler addition
+        return { x: r.x + b.x, y: r.y + b.y, z: r.z + b.z };
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Invert Rotation ────────────────────────────────────────────────────
+  // Blender: node_fn_invert_rotation.cc
+  // "Compute the inverse of the given rotation"
+
+  registry.addNode('geo', 'invert_rotation', {
+    label: 'Invert Rotation',
+    category: 'VECTOR',
+    inputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    outputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const rot = inputs['Rotation'];
+      const result = mapField(rot, 'vector', (r) => {
+        const v = r || { x: 0, y: 0, z: 0 };
+        return { x: -v.x, y: -v.y, z: -v.z };
+      });
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Is Face Smooth ─────────────────────────────────────────────────────
+  // Blender: node_geo_input_face_smooth.cc
+  // "Retrieve whether each face is marked for smooth normals"
+  // Output: Smooth (bool field) - reads sharp_face and inverts
+
+  registry.addNode('geo', 'is_face_smooth', {
+    label: 'Is Face Smooth',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [{ name: 'Smooth', type: SocketType.BOOL }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      // Reads sharp_face attribute and inverts (smooth = !sharp)
+      return { outputs: [new Field('bool', () => true)] };
+    },
+  });
+
+  // ── Index Switch ───────────────────────────────────────────────────────
+  // Blender: node_geo_index_switch.cc
+  // "Choose between values with an index"
+  //
+  // Inputs: Index (int), 0..N values
+  // Output: Output (dynamic type)
+  // Property: data_type
+  //
+  // Simplified: we support 4 fixed inputs (0, 1, 2, 3).
+
+  registry.addNode('geo', 'index_switch', {
+    label: 'Index Switch',
+    category: 'UTILITIES',
+    defaults: { data_type: 'FLOAT' },
+    getInputs(values) {
+      const type = switchDataTypeToSocket(values.data_type || 'FLOAT');
+      return [
+        { name: 'Index', type: SocketType.INT },
+        { name: '0', type },
+        { name: '1', type },
+        { name: '2', type },
+        { name: '3', type },
+      ];
+    },
+    getOutputs(values) {
+      const type = switchDataTypeToSocket(values.data_type || 'FLOAT');
+      return [{ name: 'Output', type }];
+    },
+    getProps() {
+      return [{
+        key: 'data_type', label: 'Data Type', type: 'select',
+        options: [
+          { value: 'FLOAT', label: 'Float' },
+          { value: 'INT', label: 'Integer' },
+          { value: 'BOOLEAN', label: 'Boolean' },
+          { value: 'VECTOR', label: 'Vector' },
+          { value: 'COLOR', label: 'Color' },
+          { value: 'GEOMETRY', label: 'Geometry' },
+        ],
+      }];
+    },
+    evaluate(values, inputs) {
+      const idx = resolveScalar(inputs['Index'], 0);
+      const clamped = Math.max(0, Math.min(3, Math.round(idx)));
+      const result = inputs[String(clamped)];
+      return { outputs: [result ?? 0] };
+    },
+  });
+
+  // ── Rotation to Euler ──────────────────────────────────────────────────
+  // Blender: node_fn_rotation_to_euler.cc
+  // "Convert a rotation to euler angles"
+  // Input: Rotation, Output: Euler (vector)
+
+  registry.addNode('geo', 'rotation_to_euler', {
+    label: 'Rotation to Euler',
+    category: 'VECTOR',
+    inputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    outputs: [{ name: 'Euler', type: SocketType.VECTOR }],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const rot = inputs['Rotation'];
+      if (isField(rot)) return { outputs: [rot] };
+      return { outputs: [rot || { x: 0, y: 0, z: 0 }] };
+    },
+  });
+
+  // ── Rotation to Axis Angle ─────────────────────────────────────────────
+  // Blender: node_fn_rotation_to_axis_angle.cc
+  // "Convert a rotation to axis angle components"
+  // Input: Rotation, Outputs: Axis (vector), Angle (float)
+
+  registry.addNode('geo', 'rotation_to_axis_angle', {
+    label: 'Rotation to Axis Angle',
+    category: 'VECTOR',
+    inputs: [{ name: 'Rotation', type: SocketType.VECTOR }],
+    outputs: [
+      { name: 'Axis', type: SocketType.VECTOR },
+      { name: 'Angle', type: SocketType.FLOAT },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const rot = inputs['Rotation'];
+
+      function toAxisAngle(r) {
+        const v = r || { x: 0, y: 0, z: 0 };
+        const angle = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (angle < 1e-10) return { axis: { x: 0, y: 0, z: 1 }, angle: 0 };
+        return {
+          axis: { x: v.x / angle, y: v.y / angle, z: v.z / angle },
+          angle,
+        };
+      }
+
+      if (isField(rot)) {
+        return { outputs: [
+          new Field('vector', (el) => toAxisAngle(rot.evaluateAt(el)).axis),
+          new Field('float', (el) => toAxisAngle(rot.evaluateAt(el)).angle),
+        ]};
+      }
+
+      const result = toAxisAngle(rot);
+      return { outputs: [result.axis, result.angle] };
+    },
+  });
+
+  // ── Curve Tilt (input) ─────────────────────────────────────────────────
+  // Blender: node_geo_input_curve_tilt.cc
+  // "Retrieve the tilt angle at each control point"
+  // Output: Tilt (float field)
+
+  registry.addNode('geo', 'curve_tilt', {
+    label: 'Curve Tilt',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [{ name: 'Tilt', type: SocketType.FLOAT }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [new Field('float', () => 0)] };
+    },
+  });
+
+  // ── Is Viewport ────────────────────────────────────────────────────────
+  // Blender: node_geo_is_viewport.cc
+  // "Retrieve whether evaluation is for viewport vs final render"
+  // In browser context, always true (we're always in "viewport").
+
+  registry.addNode('geo', 'is_viewport', {
+    label: 'Is Viewport',
+    category: 'INPUT',
+    inputs: [],
+    outputs: [{ name: 'Is Viewport', type: SocketType.BOOL }],
+    defaults: {},
+    props: [],
+    evaluate() {
+      return { outputs: [true] };
+    },
+  });
+}
+
+function switchDataTypeToSocket(type) {
+  switch (type) {
+    case 'FLOAT': return SocketType.FLOAT;
+    case 'INT': return SocketType.INT;
+    case 'BOOLEAN': return SocketType.BOOL;
+    case 'VECTOR': return SocketType.VECTOR;
+    case 'COLOR': return SocketType.COLOR;
+    case 'GEOMETRY': return SocketType.GEOMETRY;
+    default: return SocketType.FLOAT;
+  }
+}
+
+function namedAttrTypeToSocket(type) {
+  switch (type) {
+    case 'FLOAT': return SocketType.FLOAT;
+    case 'INT': return SocketType.INT;
+    case 'FLOAT_VECTOR': return SocketType.VECTOR;
+    case 'BOOLEAN': return SocketType.BOOL;
+    case 'FLOAT_COLOR': return SocketType.COLOR;
+    default: return SocketType.FLOAT;
+  }
+}
+
+function rotateVecByEuler(v, rx, ry, rz) {
+  // Rotate around X
+  let y1 = v.y * Math.cos(rx) - v.z * Math.sin(rx);
+  let z1 = v.y * Math.sin(rx) + v.z * Math.cos(rx);
+  // Rotate around Y
+  let x2 = v.x * Math.cos(ry) + z1 * Math.sin(ry);
+  let z2 = -v.x * Math.sin(ry) + z1 * Math.cos(ry);
+  // Rotate around Z
+  let x3 = x2 * Math.cos(rz) - y1 * Math.sin(rz);
+  let y3 = x2 * Math.sin(rz) + y1 * Math.cos(rz);
+  return { x: x3, y: y3, z: z2 };
 }

@@ -1259,6 +1259,58 @@ export function createMeshLine(count, startX, startY, startZ, offsetX, offsetY, 
   return mesh;
 }
 
+/**
+ * Create a circle mesh (like Blender's Mesh Circle node).
+ * Circle lies in XY plane, centered at origin.
+ *
+ * @param {number} vertices - Number of vertices on the rim (min 3)
+ * @param {number} radius - Radius of the circle
+ * @param {string} fillType - 'NONE', 'NGON', or 'TRIANGLE_FAN'
+ */
+export function createMeshCircle(vertices, radius, fillType) {
+  const mesh = new MeshComponent();
+  vertices = Math.max(3, Math.round(vertices));
+
+  // Create rim vertices
+  for (let i = 0; i < vertices; i++) {
+    const angle = (i / vertices) * Math.PI * 2;
+    mesh.positions.push({
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      z: 0,
+    });
+  }
+
+  // Create rim edges (always present)
+  for (let i = 0; i < vertices; i++) {
+    mesh.edges.push([i, (i + 1) % vertices]);
+  }
+
+  if (fillType === 'NGON') {
+    // Single n-gon face using all rim vertices
+    mesh.faceVertCounts.push(vertices);
+    for (let i = 0; i < vertices; i++) {
+      mesh.cornerVerts.push(i);
+    }
+  } else if (fillType === 'TRIANGLE_FAN') {
+    // Add center vertex
+    const centerIdx = mesh.positions.length;
+    mesh.positions.push({ x: 0, y: 0, z: 0 });
+
+    // Create triangular faces from center to each edge
+    for (let i = 0; i < vertices; i++) {
+      const next = (i + 1) % vertices;
+      mesh.faceVertCounts.push(3);
+      mesh.cornerVerts.push(centerIdx, i, next);
+      // Add spoke edges
+      mesh.edges.push([centerIdx, i]);
+    }
+  }
+  // NONE: just rim vertices and edges, no faces
+
+  return mesh;
+}
+
 // ── Curve Primitive Builders ─────────────────────────────────────────────────
 
 /**

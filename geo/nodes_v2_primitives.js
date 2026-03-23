@@ -15,6 +15,9 @@ import {
   createMeshTorus,
   createCurveLine,
   createCurveCircle,
+  createMeshLine,
+  createMeshCircle,
+  MeshComponent,
 } from '../core/geometry.js';
 
 export function registerPrimitiveNodes(registry) {
@@ -270,6 +273,113 @@ export function registerPrimitiveNodes(registry) {
       return { outputs: [gs] };
     },
   });
+
+  // ── Mesh Line ────────────────────────────────────────────────────────────
+  // Blender: node_geo_mesh_primitive_line.cc
+  // "Generate vertices in a line and connect them with edges"
+  // Mode: OFFSET (count + start + offset) or END_POINTS (start + end)
+
+  registry.addNode('geo', 'mesh_line', {
+    label: 'Mesh Line',
+    category: 'MESH_PRIMITIVES',
+    inputs: [
+      { name: 'Count', type: SocketType.INT },
+      { name: 'Start Location', type: SocketType.VECTOR },
+      { name: 'Offset', type: SocketType.VECTOR },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: {
+      count: 10,
+      mode: 'OFFSET',
+      startX: 0, startY: 0, startZ: 0,
+      offsetX: 0, offsetY: 0, offsetZ: 1,
+    },
+    props: [
+      { key: 'count', label: 'Count', type: 'int', min: 1, max: 10000, step: 1 },
+      {
+        key: 'mode', label: 'Mode', type: 'select',
+        options: [
+          { value: 'OFFSET', label: 'Offset' },
+          { value: 'END_POINTS', label: 'End Points' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const count = inputs['Count'] != null ? Math.round(inputs['Count']) : values.count;
+      const startIn = inputs['Start Location'];
+      const start = startIn || { x: values.startX, y: values.startY, z: values.startZ };
+      const offsetIn = inputs['Offset'];
+      const offset = offsetIn || { x: values.offsetX, y: values.offsetY, z: values.offsetZ };
+
+      const gs = new GeometrySet();
+
+      if (values.mode === 'END_POINTS') {
+        // In END_POINTS mode, offset acts as end location
+        gs.mesh = createMeshLine(count, start.x, start.y, start.z,
+          offset.x - start.x, offset.y - start.y, offset.z - start.z);
+      } else {
+        // OFFSET mode: each vertex is start + i * offset
+        const mesh = new MeshComponent();
+        const n = Math.max(1, Math.round(count));
+        for (let i = 0; i < n; i++) {
+          mesh.positions.push({
+            x: start.x + offset.x * i,
+            y: start.y + offset.y * i,
+            z: start.z + offset.z * i,
+          });
+        }
+        for (let i = 0; i < n - 1; i++) {
+          mesh.edges.push([i, i + 1]);
+        }
+        gs.mesh = mesh;
+      }
+
+      return { outputs: [gs] };
+    },
+  });
+
+  // ── Mesh Circle ─────────────────────────────────────────────────────────
+  // Blender: node_geo_mesh_primitive_circle.cc
+  // Inputs: Vertices (int 32, min 3), Radius (float 1.0, min 0)
+  // Property: Fill Type (None, Ngon, Triangle Fan) - default None
+  // Output: Mesh
+
+  registry.addNode('geo', 'mesh_circle', {
+    label: 'Mesh Circle',
+    category: 'MESH_PRIMITIVES',
+    inputs: [
+      { name: 'Vertices', type: SocketType.INT },
+      { name: 'Radius', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: { vertices: 32, radius: 1.0, fill_type: 'NONE' },
+    props: [
+      { key: 'vertices', label: 'Vertices', type: 'int', min: 3, max: 4096, step: 1 },
+      { key: 'radius', label: 'Radius', type: 'float', min: 0, max: 1000, step: 0.01 },
+      {
+        key: 'fill_type', label: 'Fill Type', type: 'select',
+        options: [
+          { value: 'NONE', label: 'None' },
+          { value: 'NGON', label: 'N-Gon' },
+          { value: 'TRIANGLE_FAN', label: 'Triangle Fan' },
+        ],
+      },
+    ],
+    evaluate(values, inputs) {
+      const verts = inputs['Vertices'] != null ? Math.round(inputs['Vertices']) : values.vertices;
+      const radius = inputs['Radius'] != null ? inputs['Radius'] : values.radius;
+      const fillType = values.fill_type || 'NONE';
+      const gs = new GeometrySet();
+      gs.mesh = createMeshCircle(verts, radius, fillType);
+      return { outputs: [gs] };
+    },
+  });
+
+  // ── Curve Primitives ──────────────────────────────────────────────────
 
   registry.addNode('geo', 'curve_circle', {
     label: 'Curve Circle',

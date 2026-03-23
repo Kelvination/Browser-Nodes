@@ -20,7 +20,7 @@ import {
   DOMAIN,
   ATTR_TYPE,
 } from '../core/geometry.js';
-import { Field, isField, resolveField, resolveScalar } from '../core/field.js';
+import { Field, isField, resolveField, resolveScalar, resolveSelection } from '../core/field.js';
 import {
   seededRandom,
   vecSub,
@@ -493,6 +493,114 @@ export function registerPointOpNodes(registry) {
       });
 
       return { outputs: [result, normalField, rotationField] };
+    },
+  });
+
+  // ── Points ──────────────────────────────────────────────────────────────
+  // Blender: node_geo_points.cc
+  // "Generate a point cloud with positions and radii"
+  //
+  // Inputs: Count (int, default 1, min 0), Position (vector field),
+  //         Radius (float field, default 0.1)
+  // Output: Points (geometry)
+
+  registry.addNode('geo', 'points', {
+    label: 'Points',
+    category: 'POINT',
+    inputs: [
+      { name: 'Count', type: SocketType.INT },
+      { name: 'Position', type: SocketType.VECTOR },
+      { name: 'Radius', type: SocketType.FLOAT },
+    ],
+    outputs: [
+      { name: 'Points', type: SocketType.GEOMETRY },
+    ],
+    defaults: { count: 1, radius: 0.1 },
+    props: [
+      { key: 'count', label: 'Count', type: 'int', min: 0, max: 10000, step: 1 },
+      { key: 'radius', label: 'Radius', type: 'float', min: 0, max: 1000, step: 0.01 },
+    ],
+    evaluate(values, inputs) {
+      const count = inputs['Count'] != null ? Math.max(0, Math.round(inputs['Count'])) : values.count;
+      const posInput = inputs['Position'];
+      const radiusInput = inputs['Radius'];
+
+      if (count === 0) return { outputs: [new GeometrySet()] };
+
+      const mesh = new MeshComponent();
+
+      // Build elements for field evaluation
+      const elements = [];
+      for (let i = 0; i < count; i++) {
+        elements.push({
+          index: i,
+          count,
+          position: { x: 0, y: 0, z: 0 },
+          normal: { x: 0, y: 1, z: 0 },
+        });
+      }
+
+      // Evaluate position field
+      if (posInput != null && isField(posInput)) {
+        const positions = posInput.evaluateAll(elements);
+        for (let i = 0; i < count; i++) {
+          mesh.positions.push(positions[i] || { x: 0, y: 0, z: 0 });
+        }
+      } else {
+        const pos = posInput || { x: 0, y: 0, z: 0 };
+        for (let i = 0; i < count; i++) {
+          mesh.positions.push({ x: pos.x, y: pos.y, z: pos.z });
+        }
+      }
+
+      const result = new GeometrySet();
+      result.mesh = mesh;
+      return { outputs: [result] };
+    },
+  });
+
+  // ── Points to Vertices ──────────────────────────────────────────────────
+  // Blender: node_geo_points_to_vertices.cc
+  // "Generate a mesh vertex for each point cloud point"
+  //
+  // Inputs: Points (geometry, pointcloud), Selection (bool field)
+  // Output: Mesh (geometry)
+  //
+  // In our system, point clouds are stored as MeshComponent with positions only.
+
+  registry.addNode('geo', 'points_to_vertices', {
+    label: 'Points to Vertices',
+    category: 'POINT',
+    inputs: [
+      { name: 'Points', type: SocketType.GEOMETRY },
+      { name: 'Selection', type: SocketType.BOOL },
+    ],
+    outputs: [
+      { name: 'Mesh', type: SocketType.GEOMETRY },
+    ],
+    defaults: {},
+    props: [],
+    evaluate(values, inputs) {
+      const geo = inputs['Points'];
+      if (!geo || !geo.mesh || geo.mesh.vertexCount === 0) {
+        return { outputs: [new GeometrySet()] };
+      }
+
+      const elements = geo.mesh.buildElements(DOMAIN.POINT);
+      const selection = resolveSelection(inputs['Selection'], elements);
+
+      const result = new GeometrySet();
+      const mesh = new MeshComponent();
+
+      for (let i = 0; i < geo.mesh.vertexCount; i++) {
+        if (selection && !selection[i]) continue;
+        mesh.positions.push({ ...geo.mesh.positions[i] });
+      }
+
+      if (mesh.positions.length > 0) {
+        result.mesh = mesh;
+      }
+      return { outputs: [result] };
     },
   });
 }
